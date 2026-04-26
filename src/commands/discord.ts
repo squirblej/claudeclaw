@@ -147,6 +147,10 @@ function upsertThread(id: string, parentId: string, rawName?: string): void {
   knownThreads.set(id, { parentId, agentName: agentName ?? existing?.agentName });
 }
 
+// Peer bot state
+const pendingBotMessages = new Map<string, string[]>(); // channelId → buffered context lines
+const botTriggerDepth = new Map<string, number>();      // channelId → current bot→bot hop count
+
 // --- Debug ---
 
 function debugLog(message: string): void {
@@ -735,8 +739,27 @@ const pendingForwards = new Map<string, { snapshot: DiscordMessageSnapshot; time
 async function handleMessageCreate(token: string, message: DiscordMessage, skipCoalesce = false): Promise<void> {
   const config = getSettings().discord;
 
-  // Ignore bot messages
-  if (message.author.bot) return;
+  if (message.author.bot) {
+    // Allow trusted peer bots through; ignore all others
+    if (!config.trustedBotIds.includes(message.author.id)) return;
+
+    const channelId = message.channel_id;
+    const content = message.content.replace(/\0/g, "").trim();
+    const line = `[Discord from ${message.author.username} | peer-bot] Message: ${content}`;
+
+    const buf = pendingBotMessages.get(channelId) ?? [];
+    buf.push(line);
+    pendingBotMessages.set(channelId, buf);
+
+    // Only trigger a run if this bot was @mentioned AND depth allows
+    const triggerReason = message.guild_id ? guildTriggerReason(message) : null;
+    const isMention = triggerReason === "mention" || triggerReason === "mention_in_content";
+    const depth = botTriggerDepth.get(channelId) ?? 0;
+    if (!isMention || depth >= (config.maxBotTriggerDepth ?? 1)) return;
+
+    botTriggerDepth.set(channelId, depth + 1);
+    // Fall through to normal message handling as a triggered run
+  }
 
   const userId = message.author.id;
   const channelId = message.channel_id;
@@ -771,8 +794,9 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     `Handle message channel=${channelId} from=${userId} reason=${triggerReason} text="${content.slice(0, 80)}"`,
   );
 
-  // Authorization check
-  if (config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(userId)) {
+  // Authorization check (trusted peer bots bypass the allowedUserIds gate)
+  const isTrustedBot = message.author.bot && config.trustedBotIds.includes(userId);
+  if (!isTrustedBot && config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(userId)) {
     if (isDM) {
       await sendMessage(config.token, channelId, "Unauthorized.");
     } else {
@@ -1007,6 +1031,13 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
       promptParts.push("The user attached a text file, but downloading it failed. Ask them to resend.");
     }
 
+    // Prepend any buffered peer-bot messages as context
+    const buffered = pendingBotMessages.get(channelId) ?? [];
+    if (buffered.length > 0) {
+      promptParts.unshift(...buffered);
+      pendingBotMessages.delete(channelId);
+    }
+
     // Include context from replied-to or forwarded messages
     const isForward = message.message_reference?.type === 1;
     const snapshot = coalescedSnapshot ?? message.message_snapshots?.[0]?.message;
@@ -1060,6 +1091,10 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
         }
       }
     })();
+
+    // Decrement bot→bot trigger depth after run completes
+    const depthAfter = botTriggerDepth.get(channelId) ?? 0;
+    if (depthAfter > 0) botTriggerDepth.set(channelId, depthAfter - 1);
 
     if (result.exitCode !== 0) {
       await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${extractErrorDetail(result) || "Unknown error"}`);
