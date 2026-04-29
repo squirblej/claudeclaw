@@ -79,7 +79,7 @@ const DEFAULT_SETTINGS: Settings = {
     forwardToTelegram: true,
   },
   telegram: { token: "", allowedUserIds: [], listenChats: [], receiveEnabled: true, dmIsolation: "shared" },
-  discord: { token: "", allowedUserIds: [], listenChannels: [], listenGuilds: [], imageOutputRoots: [], streaming: false, trustedBotIds: [], maxBotTriggerDepth: 1 },
+  discord: { token: "", allowedUserIds: [], listenChannels: [], listenGuilds: [], imageOutputRoots: [], streaming: false, allowedChannels: [], trustedBotIds: [], maxBotTriggerDepth: 1 },
   slack: { botToken: "", appToken: "", allowedUserIds: [], listenChannels: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
@@ -131,6 +131,7 @@ export interface DiscordConfig {
   channelNames?: Record<string, string>; // channelId -> friendly name for system prompt context
   imageOutputRoots: string[]; // Absolute path prefixes from which image uploads are permitted
   streaming?: boolean; // When true, POST a live preview while Claude is working. Default: false.
+  allowedChannels: string[]; // When non-empty, bot ignores all messages outside these channels (even mentions)
   trustedBotIds: string[];  // Discord user IDs of peer ClaudeClaw bots
   maxBotTriggerDepth: number; // Max bot→bot reply hops before suppressing (default 1)
 }
@@ -367,6 +368,9 @@ function parseSettings(
         ? raw.discord.imageOutputRoots.filter((r: unknown) => typeof r === "string" && isAbsolute(r))
         : [],
       streaming: raw.discord?.streaming === true,
+      allowedChannels: Array.isArray(raw.discord?.allowedChannels)
+        ? raw.discord.allowedChannels.map(String)
+        : [],
       trustedBotIds: Array.isArray(raw.discord?.trustedBotIds)
         ? raw.discord.trustedBotIds.map(String)
         : [],

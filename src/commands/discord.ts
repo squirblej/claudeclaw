@@ -219,6 +219,7 @@ async function sendMessage(
   channelId: string,
   text: string,
   components?: unknown[],
+  replyToMessageId?: string,
 ): Promise<void> {
   const chunks = discordMessageChunks(text);
   for (let i = 0; i < chunks.length; i++) {
@@ -227,6 +228,10 @@ async function sendMessage(
     // Attach components only to the last chunk
     if (components && i === chunks.length - 1) {
       body.components = components;
+    }
+    // Reply to the triggering message on the first chunk only
+    if (replyToMessageId && i === 0) {
+      body.message_reference = { message_id: replyToMessageId };
     }
     await discordApi(token, "POST", `/channels/${channelId}/messages`, body);
   }
@@ -442,6 +447,13 @@ async function rejoinThreads(
 // --- Guild trigger logic ---
 
 function guildTriggerReason(message: DiscordMessage): string | null {
+  const config = getSettings().discord;
+
+  // allowedChannels gate: when set, silently ignore everything outside listed channels
+  if (config.allowedChannels.length > 0 && !config.allowedChannels.includes(message.channel_id)) {
+    return null;
+  }
+
   // Reply to bot
   if (botUserId && message.referenced_message?.author?.id === botUserId) return "reply_to_bot";
 
@@ -452,7 +464,6 @@ function guildTriggerReason(message: DiscordMessage): string | null {
   if (botUserId && message.content.includes(`<@${botUserId}>`)) return "mention_in_content";
 
   // Listen channel (respond to all messages, no mention needed)
-  const config = getSettings().discord;
   if (config.listenChannels.includes(message.channel_id)) return "listen_channel";
 
   // Listen guild (respond to all messages in any channel/thread of this guild)
@@ -805,6 +816,14 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     return;
   }
 
+  // For mention-triggered messages, reply to the original so the sender gets a ping
+  const replyToId =
+    triggerReason === "mention" ||
+    triggerReason === "mention_in_content" ||
+    triggerReason === "reply_to_bot"
+      ? message.id
+      : undefined;
+
   // Detect attachments
   const imageAttachments = message.attachments.filter(isImageAttachment);
   const voiceAttachments = message.attachments.filter(isVoiceAttachment);
@@ -1097,7 +1116,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     if (depthAfter > 0) botTriggerDepth.set(channelId, depthAfter - 1);
 
     if (result.exitCode !== 0) {
-      await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${extractErrorDetail(result) || "Unknown error"}`);
+      await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${extractErrorDetail(result) || "Unknown error"}`, undefined, replyToId);
     } else {
       const { cleanedText, reactionEmoji } = extractReactionDirective(result.stdout || "");
       if (reactionEmoji) {
@@ -1109,13 +1128,13 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
       if (imagePaths.length > 0) {
         await sendMessageWithImages(config.token, channelId, finalText || "(empty response)", imagePaths);
       } else {
-        await sendMessage(config.token, channelId, finalText || "(empty response)");
+        await sendMessage(config.token, channelId, finalText || "(empty response)", undefined, replyToId);
       }
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(`[Discord] Error for ${label}: ${errMsg}`);
-    await sendMessage(config.token, channelId, `Error: ${errMsg}`);
+    await sendMessage(config.token, channelId, `Error: ${errMsg}`, undefined, replyToId);
   } finally {
     if (streamCb) {
       await streamCb.finalize();
