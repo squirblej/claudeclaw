@@ -365,31 +365,60 @@ async function uploadImageMessage(
 }
 
 // --- Thread rejoin helper ---
-async function rejoinThreads(token: string): Promise<void> {
+// trigger='RESUMED': skip all REST calls — session is intact, delivery should be live.
+// trigger='GUILD_CREATE': PUT-only for threads listed as member=yes; DELETE+PUT for others.
+async function rejoinThreads(
+  token: string,
+  trigger: "GUILD_CREATE" | "RESUMED",
+  memberThreadIds?: Set<string>,
+): Promise<void> {
   const threadSessions = await listThreadSessions();
-  let rejoinedCount = 0;
-  for (const ts of threadSessions) {
-    // Skip non-snowflake keys (e.g. job names); they are not Discord channel IDs.
-    if (!/^\d{17,19}$/.test(ts.threadId)) continue;
+  const sessionShort = gatewaySessionId?.slice(0, 8) ?? "?";
+  const infra = threadSessions.filter((ts) => /^\d{17,19}$/.test(ts.threadId));
+
+  if (trigger === "RESUMED") {
+    console.log(`[Discord][REJOIN] trigger=RESUMED threads=${infra.length} session=${sessionShort}`);
+    for (const ts of infra) {
+      console.log(`[Discord][REJOIN] thread=${ts.threadId} RESUMED=skip (session intact)`);
+    }
+    return;
+  }
+
+  // GUILD_CREATE path
+  const config = getSettings().discord;
+  const listenInfra = infra.filter((ts) =>
+    config.listenChannels.includes(knownThreads.get(ts.threadId)?.parentId ?? ""),
+  );
+  console.log(
+    `[Discord][REJOIN] trigger=GUILD_CREATE threads=${listenInfra.length} session=${sessionShort}`,
+  );
+
+  for (const ts of infra) {
+    const isMember = memberThreadIds?.has(ts.threadId) ?? false;
     try {
-      const ch = await discordApi<{ parent_id?: string; name?: string; type?: number }>(token, "GET", `/channels/${ts.threadId}`);
-      const isThread = ch.type === 10 || ch.type === 11 || ch.type === 12;
-      if (!isThread) continue;
-
-      if (ch.parent_id && !knownThreads.has(ts.threadId)) {
-        upsertThread(ts.threadId, ch.parent_id, ch.name);
+      if (!isMember) {
+        // Not in GUILD_CREATE member list — force full rejoin to reset gateway subscription
+        await discordApi(token, "DELETE", `/channels/${ts.threadId}/thread-members/@me`).catch(() => {});
       }
-
-      await discordApi(token, "DELETE", `/channels/${ts.threadId}/thread-members/@me`).catch(() => {});
-      await discordApi(token, "PUT", `/channels/${ts.threadId}/thread-members/@me`);
-      rejoinedCount += 1;
+      const putRes = await fetch(`${DISCORD_API}/channels/${ts.threadId}/thread-members/@me`, {
+        method: "PUT",
+        headers: { Authorization: `Bot ${token}` },
+      });
+      console.log(
+        `[Discord][REJOIN] thread=${ts.threadId} GUILD_CREATE=${isMember ? "member" : "non-member"} PUT=${putRes.status}`,
+      );
+      if (!knownThreads.has(ts.threadId)) {
+        const ch = await discordApi<{ parent_id?: string }>(token, "GET", `/channels/${ts.threadId}`);
+        if (ch.parent_id) knownThreads.set(ts.threadId, { parentId: ch.parent_id });
+      }
       console.log(`[Discord] Rejoined thread: ${ts.threadId}`);
     } catch (err) {
       console.error(`[Discord] Failed to rejoin thread ${ts.threadId}: ${err}`);
     }
   }
-  if (rejoinedCount > 0) {
-    console.log(`[Discord] Rejoined ${rejoinedCount} thread(s) from sessions.json`);
+
+  if (infra.length > 0) {
+    console.log(`[Discord][REJOIN] done. knownThreads size=${knownThreads.size}`);
   }
 }
 
@@ -1248,8 +1277,8 @@ function handleDispatch(token: string, eventName: string, data: any): void {
       break;
 
     case "RESUMED":
-      console.log("[Discord] Session resumed — rejoining threads");
-      rejoinThreads(token).catch((err) =>
+      console.log("[Discord] Session resumed — skipping REST rejoin (session intact)");
+      rejoinThreads(token, "RESUMED").catch((err) =>
         console.error(`[Discord] Failed to rejoin threads on RESUMED: ${err}`),
       );
       break;
@@ -1267,25 +1296,31 @@ function handleDispatch(token: string, eventName: string, data: any): void {
       );
       break;
 
-    case "GUILD_CREATE":
-      // Cache active threads for multi-session support
+    case "GUILD_CREATE": {
+      // Cache active threads and collect member status for targeted rejoin
+      const memberThreadIds = new Set<string>();
       if (data.threads) {
         console.log(`[Discord] GUILD_CREATE: ${data.threads.length} active threads in guild ${data.id}`);
         for (const thread of data.threads) {
           upsertThread(thread.id, thread.parent_id, thread.name);
-          console.log(`[Discord]   thread: ${thread.id} name="${thread.name}" parent=${thread.parent_id}`);
+          const memberStatus = thread.member ? "yes" : "no";
+          console.log(
+            `[Discord]   thread: ${thread.id} name="${thread.name}" parent=${thread.parent_id} member=${memberStatus}`,
+          );
+          if (thread.member) memberThreadIds.add(thread.id);
         }
       } else {
         console.log(`[Discord] GUILD_CREATE: no active threads in guild ${data.id}`);
       }
-      // Rejoin all known threads from sessions.json so gateway sends MESSAGE_CREATE
-      rejoinThreads(token).catch((err) =>
+      // Rejoin threads: PUT-only for member=yes, DELETE+PUT for others
+      rejoinThreads(token, "GUILD_CREATE", memberThreadIds).catch((err) =>
         console.error(`[Discord] Failed to rejoin threads: ${err}`),
       );
       handleGuildCreate(token, data).catch((err) =>
         console.error(`[Discord] GUILD_CREATE unhandled: ${err}`),
       );
       break;
+    }
 
     case "THREAD_CREATE":
       if (data.id && data.parent_id) {
@@ -1357,24 +1392,23 @@ function handleGatewayPayload(token: string, payload: GatewayPayload): void {
       break;
 
     case GatewayOp.RECONNECT:
-      debugLog("Gateway requested reconnect");
+      console.log("[Discord][GW] op=RECONNECT — gateway requested reconnect");
       ws?.close(4000, "Reconnect requested");
       break;
 
     case GatewayOp.INVALID_SESSION: {
       const resumable = payload.d;
-      debugLog(`Invalid session, resumable=${resumable}`);
-      if (!resumable) {
+      console.log(`[Discord][GW] op=INVALID_SESSION resumable=${resumable}`);
+      if (resumable && gatewaySessionId) {
+        setTimeout(() => sendResume(token), 1000 + Math.random() * 4000);
+      } else {
+        // Close the ws so onclose opens a fresh connection and sends IDENTIFY from scratch.
+        // Sending IDENTIFY on the same ws that just failed RESUME causes Discord to not
+        // restore thread message delivery for the new session.
         gatewaySessionId = null;
         lastSequence = null;
+        ws?.close(4000, "Non-resumable INVALID_SESSION — reconnecting fresh");
       }
-      setTimeout(() => {
-        if (resumable && gatewaySessionId) {
-          sendResume(token);
-        } else {
-          sendIdentify(token);
-        }
-      }, 1000 + Math.random() * 4000);
       break;
     }
 
