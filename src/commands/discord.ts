@@ -1,5 +1,6 @@
 import { ensureProjectClaudeMd, run, runUserMessage, compactCurrentSession, compactCurrentThreadSession, agentDirKey } from "../runner";
 import { extractErrorDetail } from "../messaging";
+import { loadPendingResume } from "../pending-resume";
 import { getSettings, loadSettings, DEFAULT_IMAGE_OUTPUT_ROOT } from "../config";
 import { resetSession, resetFallbackSession, peekSession } from "../sessions";
 import { listThreadSessions, removeThreadSession, peekThreadSession } from "../sessionManager";
@@ -1176,6 +1177,23 @@ function sendResume(token: string): void {
 // Non-recoverable close codes that should not trigger reconnection
 const FATAL_CLOSE_CODES = new Set([4004, 4010, 4011, 4012, 4013, 4014]);
 
+async function runPendingResume(token: string): Promise<void> {
+  const resume = await loadPendingResume();
+  if (!resume || resume.transport !== "discord") return;
+  console.log(`[Discord] Running pending resume for channel ${resume.channelId}`);
+  const result = await runUserMessage("discord", resume.wakeUpPrompt, resume.sessionKey);
+  if (result.exitCode !== 0) {
+    console.error(`[Discord] Pending resume failed (exit ${result.exitCode}): ${result.stderr || result.stdout}`);
+    return;
+  }
+  const output = result.stdout?.trim();
+  if (output) {
+    // Discord threads are channels — post to thread ID when present, else channel
+    const targetChannel = resume.threadId ?? resume.channelId;
+    await sendMessage(token, targetChannel, output);
+  }
+}
+
 function handleDispatch(token: string, eventName: string, data: any): void {
   debugLog(`Dispatch: ${eventName}`);
 
@@ -1191,6 +1209,9 @@ function handleDispatch(token: string, eventName: string, data: any): void {
       console.log(`[Discord] Ready as ${data.user.username} (${data.user.id})`);
       registerSlashCommands(token).catch((err) =>
         console.error(`[Discord] Failed to register slash commands: ${err}`),
+      );
+      runPendingResume(token).catch((err) =>
+        console.error(`[Discord] Pending resume failed: ${err instanceof Error ? err.message : err}`),
       );
       break;
 

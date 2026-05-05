@@ -1,5 +1,6 @@
 import { ensureProjectClaudeMd, run, runUserMessage, runFork, killActive, isMainBusy, compactCurrentSession, compactCurrentThreadSession, isRateLimited, getRateLimitResetAt } from "../runner";
 import { extractErrorDetail } from "../messaging";
+import { loadPendingResume } from "../pending-resume";
 import { getSettings, loadSettings } from "../config";
 import { transcribeAudioToText } from "../whisper";
 import { resetSession, resetFallbackSession, peekSession } from "../sessions";
@@ -1568,6 +1569,28 @@ export { sendMessage };
 process.on("SIGTERM", () => { running = false; });
 process.on("SIGINT", () => { running = false; });
 
+async function runPendingResumeTelegram(): Promise<void> {
+  const config = getSettings().telegram;
+  const resume = await loadPendingResume();
+  if (!resume || resume.transport !== "telegram") return;
+  const chatId = parseInt(resume.channelId, 10);
+  if (!Number.isFinite(chatId)) {
+    console.warn(`[Telegram] Pending resume: invalid chatId "${resume.channelId}"`);
+    return;
+  }
+  console.log(`[Telegram] Running pending resume for chat ${chatId}`);
+  const result = await runUserMessage("telegram", resume.wakeUpPrompt, resume.sessionKey);
+  if (result.exitCode !== 0) {
+    console.error(`[Telegram] Pending resume failed (exit ${result.exitCode}): ${result.stderr || result.stdout}`);
+    return;
+  }
+  const output = result.stdout?.trim();
+  if (output) {
+    const threadId = resume.threadId ? parseInt(resume.threadId, 10) : undefined;
+    await sendMessage(config.token, chatId, output, Number.isFinite(threadId) ? threadId : undefined);
+  }
+}
+
 /** Start polling in-process (called by start.ts when token is configured) */
 export function startPolling(debug = false): void {
   if (isPolling) return;
@@ -1577,6 +1600,7 @@ export function startPolling(debug = false): void {
   const gen = ++pollingGeneration;
   (async () => {
     await ensureProjectClaudeMd();
+    await runPendingResumeTelegram();
     await poll(gen);
   })().catch((err) => {
     if (pollingGeneration === gen) {
