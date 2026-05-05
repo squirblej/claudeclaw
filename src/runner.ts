@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile, realpath } from "fs/promises";
 import { join, dirname, resolve, sep } from "path";
 import { execSync } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, writeFileSync, mkdirSync } from "fs";
 import {
   getSession,
   createSession,
@@ -31,6 +31,7 @@ import { recordResult, abortReason, clearSession, startSession } from "./watchdo
 import { getPluginManager, type EventContext } from "./plugins";
 
 const LOGS_DIR = join(process.cwd(), ".claude/claudeclaw/logs");
+const ACTIVE_RUNS_FILE = join(process.cwd(), ".claude/claudeclaw/active-runs");
 // Resolve prompts relative to the claudeclaw installation, not the project dir
 const PROMPTS_DIR = join(import.meta.dir, "..", "prompts");
 const HEARTBEAT_PROMPT_FILE = join(PROMPTS_DIR, "heartbeat", "HEARTBEAT.md");
@@ -248,6 +249,18 @@ let globalQueue: Promise<unknown> = Promise.resolve();
 // Per-thread queues — each thread runs independently in parallel
 const threadQueues = new Map<string, Promise<unknown>>();
 
+// Counter of concurrently-running main-queue sessions (per-thread queues run in parallel)
+let mainRunCount = 0;
+
+/** Current number of concurrently-running main-queue sessions. */
+export function getMainRunCount(): number {
+  return mainRunCount;
+}
+
+function persistRunCount(): void {
+  try { writeFileSync(ACTIVE_RUNS_FILE, String(mainRunCount)); } catch {}
+}
+
 function enqueue<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
   if (threadId) {
     const current = threadQueues.get(threadId) ?? Promise.resolve();
@@ -275,10 +288,6 @@ export function killActive(): boolean {
   mainActiveProcs.clear();
   return true;
 }
-
-// Counter rather than boolean: per-thread queues run in parallel so
-// multiple main runs can be in-flight simultaneously.
-let mainRunCount = 0;
 
 /** True while any main-queue agent is processing a task (excludes fork). */
 export function isMainBusy(): boolean {
@@ -989,6 +998,7 @@ async function execClaude(
   onToolEvent?: (line: string) => void
 ): Promise<RunResult> {
   mainRunCount++;
+  persistRunCount();
   try {
   await mkdir(LOGS_DIR, { recursive: true });
 
@@ -1380,6 +1390,7 @@ async function execClaude(
   return result;
   } finally {
     mainRunCount--;
+    persistRunCount();
   }
 }
 
