@@ -1571,15 +1571,15 @@ process.on("SIGINT", () => { running = false; });
 
 async function runPendingResumeTelegram(): Promise<void> {
   const config = getSettings().telegram;
-  const resume = await loadPendingResume();
-  if (!resume || resume.transport !== "telegram") return;
+  const resume = await loadPendingResume("telegram");
+  if (!resume) return;
   const chatId = parseInt(resume.channelId, 10);
   if (!Number.isFinite(chatId)) {
     console.warn(`[Telegram] Pending resume: invalid chatId "${resume.channelId}"`);
     return;
   }
   console.log(`[Telegram] Running pending resume for chat ${chatId}`);
-  const result = await runUserMessage("telegram", resume.wakeUpPrompt, resume.sessionKey);
+  const result = await runUserMessage("telegram", resume.wakeUpPrompt, resume.sessionKey, resume.agentName);
   if (result.exitCode !== 0) {
     console.error(`[Telegram] Pending resume failed (exit ${result.exitCode}): ${result.stderr || result.stdout}`);
     return;

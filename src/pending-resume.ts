@@ -10,10 +10,10 @@ let consumed = false;
 
 export interface PendingResume {
   /** Which transport should deliver the wake-up reply. */
-  transport: "discord" | "telegram" | "slack";
-  /** Destination channel ID (Discord snowflake, Telegram chat ID as string, Slack channel ID). */
+  transport: "discord" | "telegram";
+  /** Destination channel ID (Discord snowflake, Telegram chat ID as string). */
   channelId: string;
-  /** Optional thread context — Discord thread ID or Slack thread_ts. */
+  /** Optional thread context — Discord thread ID. */
   threadId?: string;
   /**
    * sessions.json key for the session to resume (e.g. Discord channel/thread snowflake).
@@ -35,30 +35,36 @@ export interface PendingResume {
 }
 
 /**
- * Atomically consume pending-resume.json and return its contents, or null if absent/expired.
+ * Atomically consume pending-resume.json for the given transport and return its contents,
+ * or null if absent/expired/wrong-transport.
+ *
+ * The transport check happens before the file is renamed so that the wrong-transport caller
+ * does not silently destroy a file intended for a different transport handler.
  *
  * The file is renamed before the wake-up runs.  If the wake-up throws, the file is already
  * gone so a subsequent restart does not fire a second time (prefer lost message over duplicate).
  */
-export async function loadPendingResume(): Promise<PendingResume | null> {
+export async function loadPendingResume(expectedTransport: string): Promise<PendingResume | null> {
   if (consumed) return null;
-  consumed = true;
 
   if (!existsSync(PENDING_RESUME_PATH)) return null;
 
-  // Rename atomically before parsing — prevents double-fire even on crash
+  // Peek at the file to check transport before consuming it
+  let resume: PendingResume;
   try {
-    await rename(PENDING_RESUME_PATH, PENDING_RESUME_CONSUMED);
-  } catch {
+    resume = await Bun.file(PENDING_RESUME_PATH).json() as PendingResume;
+  } catch (err) {
+    console.warn(`[pending-resume] Parse failed: ${err instanceof Error ? err.message : err}`);
     return null;
   }
 
-  let resume: PendingResume;
+  if (resume.transport !== expectedTransport) return null;
+
+  // Transport matches — mark consumed and atomically rename before executing
+  consumed = true;
   try {
-    resume = await Bun.file(PENDING_RESUME_CONSUMED).json() as PendingResume;
-  } catch (err) {
-    console.warn(`[pending-resume] Parse failed: ${err instanceof Error ? err.message : err}`);
-    await unlink(PENDING_RESUME_CONSUMED).catch(() => {});
+    await rename(PENDING_RESUME_PATH, PENDING_RESUME_CONSUMED);
+  } catch {
     return null;
   }
 

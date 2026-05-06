@@ -1178,10 +1178,10 @@ function sendResume(token: string): void {
 const FATAL_CLOSE_CODES = new Set([4004, 4010, 4011, 4012, 4013, 4014]);
 
 async function runPendingResume(token: string): Promise<void> {
-  const resume = await loadPendingResume();
-  if (!resume || resume.transport !== "discord") return;
+  const resume = await loadPendingResume("discord");
+  if (!resume) return;
   console.log(`[Discord] Running pending resume for channel ${resume.channelId}`);
-  const result = await runUserMessage("discord", resume.wakeUpPrompt, resume.sessionKey);
+  const result = await runUserMessage("discord", resume.wakeUpPrompt, resume.sessionKey, resume.agentName);
   if (result.exitCode !== 0) {
     console.error(`[Discord] Pending resume failed (exit ${result.exitCode}): ${result.stderr || result.stdout}`);
     return;
