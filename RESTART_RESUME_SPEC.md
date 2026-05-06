@@ -13,7 +13,7 @@ This kills the systemd service — which is the process running the CC session t
 - The Bash tool receives exit code 144 (process killed mid-execution)
 - The CC session is terminated before it can send a reply
 - The agent cannot confirm success to the user
-- If the session had a pending Discord/Slack/Telegram reply queued, it is lost
+- If the session had a pending Discord/Telegram reply queued, it is lost
 - If the session is resumed later (e.g. user sends another message), CC resumes the old context and may re-run the restart command, causing a second unnecessary restart
 
 This is a fundamental gap: agents that manage their own lifecycle have no clean way to restart and report back.
@@ -52,7 +52,7 @@ ClaudeClaw provides a file-based mechanism for agents to schedule a **session co
 
 2. Agent fires the detached restart and ends the session cleanly.
 
-3. On the next startup, after the transport gateway reports ready (Discord READY event, Slack `hello` + `auth.test`, Telegram polling start), ClaudeClaw atomically renames the file (preventing double-fire on crash) and calls `runUserMessage` with the stored session key and wake-up prompt.
+3. On the next startup, after the transport gateway reports ready (Discord READY event, Telegram polling start), ClaudeClaw reads the file to check the transport, then atomically renames it (preventing double-fire on crash) and calls `runUserMessage` with the stored session key and wake-up prompt.
 
 4. The resumed Claude session runs as a normal turn — it has all its original context, can run tools, read logs, check process state — and its output is delivered to the stored channel and thread.
 
@@ -60,9 +60,9 @@ ClaudeClaw provides a file-based mechanism for agents to schedule a **session co
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `transport` | `"discord" \| "telegram" \| "slack"` | Which transport delivers the reply |
-| `channelId` | string | Discord channel snowflake, Telegram chat ID, or Slack channel ID |
-| `threadId` | string? | Discord thread ID or Slack `thread_ts` |
+| `transport` | `"discord" \| "telegram"` | Which transport delivers the reply |
+| `channelId` | string | Discord channel snowflake or Telegram chat ID |
+| `threadId` | string? | Discord thread ID |
 | `sessionKey` | string? | Key in `sessions.json` for the session to resume; omit to resume the global session |
 | `agentName` | string? | Agent working-directory name if the session is agent-scoped |
 | `wakeUpPrompt` | string | Injected as the next user turn; should describe the context and what to verify |
@@ -77,17 +77,13 @@ The hook fires once per process lifetime, immediately after the gateway reports 
 runPendingResume(token).catch(/* log */);
 ```
 
-**Slack** — in `startSlack`, after `auth.test` succeeds and before `connectSocket`:
-```typescript
-runPendingResumeSlack().catch(/* log */);
-```
-
 **Telegram** — in `startPolling`, before the poll loop starts:
 ```typescript
-await runPendingResumeTelegram();
+await runPendingResumeTelegram().catch(/* log */);
 ```
+The resume is wrapped so that a failure does not prevent polling from starting.
 
-The file is renamed atomically before parsing. If the wake-up throws, the file is already gone, so a subsequent crash-restart does not re-fire (prefer a lost message over a duplicate restart confirmation).
+The file is parsed first to check the transport, then renamed atomically before executing the wake-up. If the wake-up throws, the file is already gone, so a subsequent crash-restart does not re-fire (prefer a lost message over a duplicate restart confirmation).
 
 A module-level `consumed` guard in `pending-resume.ts` ensures the file is only loaded once even if multiple transports are initialised in the same process.
 
@@ -157,7 +153,7 @@ The file is written on a best-effort basis (`active-runs` is absent during the f
 ## Scope
 
 - ClaudeClaw only (not CC core)
-- Works for Discord, Telegram, and Slack transports
+- Works for Discord and Telegram transports (Slack support is out of scope for this PR)
 - No change to CC session format or JSONL
 - No new permissions required beyond what the agent already has
 

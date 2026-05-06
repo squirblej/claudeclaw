@@ -1600,7 +1600,9 @@ export function startPolling(debug = false): void {
   const gen = ++pollingGeneration;
   (async () => {
     await ensureProjectClaudeMd();
-    await runPendingResumeTelegram();
+    await runPendingResumeTelegram().catch((err) =>
+      console.error(`[Telegram] Pending resume failed: ${err instanceof Error ? err.message : err}`)
+    );
     await poll(gen);
   })().catch((err) => {
     if (pollingGeneration === gen) {
