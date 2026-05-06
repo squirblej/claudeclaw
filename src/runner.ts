@@ -258,7 +258,10 @@ export function getMainRunCount(): number {
 }
 
 function persistRunCount(): void {
-  try { writeFileSync(ACTIVE_RUNS_FILE, String(mainRunCount)); } catch {}
+  try {
+    mkdirSync(dirname(ACTIVE_RUNS_FILE), { recursive: true });
+    writeFileSync(ACTIVE_RUNS_FILE, String(mainRunCount));
+  } catch {}
 }
 
 function enqueue<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
