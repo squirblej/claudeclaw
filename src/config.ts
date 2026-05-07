@@ -79,7 +79,7 @@ const DEFAULT_SETTINGS: Settings = {
     forwardToTelegram: true,
   },
   telegram: { token: "", allowedUserIds: [], listenChats: [], receiveEnabled: true, dmIsolation: "shared" },
-  discord: { token: "", allowedUserIds: [], listenChannels: [], listenGuilds: [], imageOutputRoots: [] },
+  discord: { token: "", allowedUserIds: [], listenChannels: [], listenGuilds: [], imageOutputRoots: [], streaming: false },
   slack: { botToken: "", appToken: "", allowedUserIds: [], listenChannels: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
@@ -130,6 +130,7 @@ export interface DiscordConfig {
   listenGuilds: string[]; // Guild IDs where bot responds to all messages in any channel/thread
   channelNames?: Record<string, string>; // channelId -> friendly name for system prompt context
   imageOutputRoots: string[]; // Absolute path prefixes from which image uploads are permitted
+  streaming?: boolean; // When true, POST a live preview while Claude is working. Default: false.
 }
 
 export interface SlackConfig {
@@ -363,6 +364,7 @@ function parseSettings(
       imageOutputRoots: Array.isArray(raw.discord?.imageOutputRoots)
         ? raw.discord.imageOutputRoots.filter((r: unknown) => typeof r === "string" && isAbsolute(r))
         : [],
+      streaming: raw.discord?.streaming === true,
     },
     slack: {
       botToken: process.env.SLACK_BOT_TOKEN?.trim() || (typeof raw.slack?.botToken === "string" ? raw.slack.botToken.trim() : ""),

@@ -566,6 +566,124 @@ async function respondToInteraction(
   );
 }
 
+// --- Discord streaming callback ---
+
+const STREAM_EDIT_INTERVAL_MS = 1500;
+const STREAM_CONTENT_MAX = DISCORD_MAX_MESSAGE_LEN - 10; // room for italic markers
+
+function escapeItalic(text: string): string {
+  return text.replace(/_/g, "\\_");
+}
+
+interface DiscordStreamCallbacks {
+  onChunk: (text: string) => void;
+  onToolEvent: (line: string) => void;
+  finalize: () => Promise<void>;
+  waitForStreamMsg: () => Promise<{ msgId: string } | null>;
+}
+
+function makeDiscordStreamCallback(token: string, channelId: string): DiscordStreamCallbacks {
+  let accumulated = "";
+  let streamMsgId: string | null = null;
+  let editTimer: ReturnType<typeof setTimeout> | null = null;
+  let placeholderPosted = false;
+
+  // Resolvers for waitForStreamMsg
+  let streamMsgResolvers: Array<(v: { msgId: string } | null) => void> = [];
+  let streamMsgSettled = false;
+  let streamMsgResult: { msgId: string } | null = null;
+
+  function notifyStreamMsgWaiters(result: { msgId: string } | null): void {
+    streamMsgSettled = true;
+    streamMsgResult = result;
+    for (const resolve of streamMsgResolvers) resolve(result);
+    streamMsgResolvers = [];
+  }
+
+  async function postPlaceholder(): Promise<void> {
+    if (placeholderPosted) return;
+    placeholderPosted = true;
+    try {
+      const msg = await discordApi<{ id: string }>(
+        token,
+        "POST",
+        `/channels/${channelId}/messages`,
+        { content: "⏳" },
+      );
+      streamMsgId = msg.id;
+      notifyStreamMsgWaiters({ msgId: msg.id });
+    } catch (err) {
+      console.error(`[Discord][stream] Failed to post placeholder: ${err instanceof Error ? err.message : err}`);
+      notifyStreamMsgWaiters(null);
+    }
+  }
+
+  function scheduleEdit(): void {
+    if (editTimer) return;
+    editTimer = setTimeout(async () => {
+      editTimer = null;
+      if (!streamMsgId) return;
+      const snippet = accumulated.slice(-STREAM_CONTENT_MAX);
+      const escaped = escapeItalic(snippet);
+      const content = `_${escaped}_`;
+      try {
+        await discordApi(
+          token,
+          "PATCH",
+          `/channels/${channelId}/messages/${streamMsgId}`,
+          { content },
+        );
+      } catch (err) {
+        debugLog(`Stream edit failed: ${err instanceof Error ? err.message : err}`);
+      }
+    }, STREAM_EDIT_INTERVAL_MS);
+  }
+
+  const onChunk = (text: string): void => {
+    accumulated += text;
+    if (streamMsgId) scheduleEdit();
+  };
+
+  const onToolEvent = (line: string): void => {
+    // Post the placeholder on the first tool event
+    if (!placeholderPosted) {
+      postPlaceholder().catch((err) =>
+        console.error(`[Discord][stream] postPlaceholder error: ${err instanceof Error ? err.message : err}`),
+      );
+    }
+    accumulated += (accumulated ? "\n" : "") + line;
+    if (streamMsgId) scheduleEdit();
+  };
+
+  const finalize = async (): Promise<void> => {
+    // Cancel any pending edit
+    if (editTimer) {
+      clearTimeout(editTimer);
+      editTimer = null;
+    }
+    // If placeholder was never posted, nothing to delete
+    if (!streamMsgId) return;
+    try {
+      await discordApi(
+        token,
+        "DELETE",
+        `/channels/${channelId}/messages/${streamMsgId}`,
+      );
+    } catch (err) {
+      debugLog(`Stream finalize delete failed: ${err instanceof Error ? err.message : err}`);
+    }
+  };
+
+  const waitForStreamMsg = (): Promise<{ msgId: string } | null> => {
+    if (streamMsgSettled) return Promise.resolve(streamMsgResult);
+    return new Promise<{ msgId: string } | null>((resolve) => {
+      streamMsgResolvers.push(resolve);
+    });
+  };
+
+  return { onChunk, onToolEvent, finalize, waitForStreamMsg };
+}
+
 // --- Message handler ---
 
 // Pending forwards: when Discord delivers a forward with empty content, hold it briefly
@@ -878,7 +996,26 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
         );
       }
     }
-    const result = await runUserMessage("discord", prefixedPrompt, sessionKey, threadInfo?.agentName);
+    let streamCb: DiscordStreamCallbacks | undefined;
+    if (config.streaming) {
+      streamCb = makeDiscordStreamCallback(config.token, channelId);
+    }
+
+    const result = await runUserMessage(
+      "discord",
+      prefixedPrompt,
+      sessionKey,
+      threadInfo?.agentName,
+      streamCb?.onChunk,
+      streamCb?.onToolEvent,
+    );
+
+    if (streamCb) {
+      // Wait for the placeholder to be posted before deleting it (handles races where
+      // the tool event fires but the POST hasn't resolved yet).
+      await streamCb.waitForStreamMsg();
+      await streamCb.finalize();
+    }
 
     if (result.exitCode !== 0) {
       await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${extractErrorDetail(result) || "Unknown error"}`);
