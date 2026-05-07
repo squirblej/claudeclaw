@@ -400,18 +400,14 @@ async function rejoinThreads(
         // Not in GUILD_CREATE member list — force full rejoin to reset gateway subscription
         await discordApi(token, "DELETE", `/channels/${ts.threadId}/thread-members/@me`).catch(() => {});
       }
-      const putRes = await fetch(`${DISCORD_API}/channels/${ts.threadId}/thread-members/@me`, {
-        method: "PUT",
-        headers: { Authorization: `Bot ${token}` },
-      });
+      await discordApi(token, "PUT", `/channels/${ts.threadId}/thread-members/@me`);
       console.log(
-        `[Discord][REJOIN] thread=${ts.threadId} GUILD_CREATE=${isMember ? "member" : "non-member"} PUT=${putRes.status}`,
+        `[Discord][REJOIN] thread=${ts.threadId} GUILD_CREATE=${isMember ? "member" : "non-member"} rejoined`,
       );
       if (!knownThreads.has(ts.threadId)) {
         const ch = await discordApi<{ parent_id?: string }>(token, "GET", `/channels/${ts.threadId}`);
         if (ch.parent_id) knownThreads.set(ts.threadId, { parentId: ch.parent_id });
       }
-      console.log(`[Discord] Rejoined thread: ${ts.threadId}`);
     } catch (err) {
       console.error(`[Discord] Failed to rejoin thread ${ts.threadId}: ${err}`);
     }
