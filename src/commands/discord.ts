@@ -655,30 +655,25 @@ function makeDiscordStreamCallback(token: string, channelId: string): DiscordStr
     if (streamMsgId) scheduleEdit();
   };
 
-  const finalize = async (): Promise<void> => {
-    // Cancel any pending edit
-    if (editTimer) {
-      clearTimeout(editTimer);
-      editTimer = null;
-    }
-    // If placeholder was never posted, nothing to delete
-    if (!streamMsgId) return;
-    try {
-      await discordApi(
-        token,
-        "DELETE",
-        `/channels/${channelId}/messages/${streamMsgId}`,
-      );
-    } catch (err) {
-      debugLog(`Stream finalize delete failed: ${err instanceof Error ? err.message : err}`);
-    }
-  };
-
   const waitForStreamMsg = (): Promise<{ msgId: string } | null> => {
     if (streamMsgSettled) return Promise.resolve(streamMsgResult);
     return new Promise<{ msgId: string } | null>((resolve) => {
       streamMsgResolvers.push(resolve);
     });
+  };
+
+  const finalize = async (): Promise<void> => {
+    if (editTimer) { clearTimeout(editTimer); editTimer = null; }
+    // If no placeholder was ever triggered, nothing to clean up
+    if (!placeholderPosted) return;
+    // Wait for the in-flight POST to resolve (already done if streamMsgId is set)
+    const result = await waitForStreamMsg();
+    if (!result?.msgId) return;
+    try {
+      await discordApi(token, "DELETE", `/channels/${channelId}/messages/${result.msgId}`);
+    } catch (err) {
+      debugLog(`Stream finalize delete failed: ${err instanceof Error ? err.message : err}`);
+    }
   };
 
   return { onChunk, onToolEvent, finalize, waitForStreamMsg };
@@ -1011,9 +1006,6 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     );
 
     if (streamCb) {
-      // Wait for the placeholder to be posted before deleting it (handles races where
-      // the tool event fires but the POST hasn't resolved yet).
-      await streamCb.waitForStreamMsg();
       await streamCb.finalize();
     }
 
