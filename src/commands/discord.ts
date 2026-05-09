@@ -641,6 +641,11 @@ function makeDiscordStreamCallback(token: string, channelId: string): DiscordStr
 
   const onChunk = (text: string): void => {
     accumulated += text;
+    if (!placeholderPosted) {
+      postPlaceholder().catch((err) =>
+        console.error(`[Discord][stream] postPlaceholder error: ${err instanceof Error ? err.message : err}`),
+      );
+    }
     if (streamMsgId) scheduleEdit();
   };
 
