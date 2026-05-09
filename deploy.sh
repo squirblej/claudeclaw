@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# Deploy production branch to the ClaudeClaw plugin cache and restart Berty.
+# Deploy production branch to the ClaudeClaw plugin cache and restart all bots.
 # Run from any directory; always deploys the 'production' branch regardless of
 # what is currently checked out in the working tree.
 #
 # Usage:
-#   ./deploy.sh           — deploy production and restart berty
+#   ./deploy.sh           — deploy production and restart all bots
 #   ./deploy.sh --dry-run — show what would be copied, don't restart
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 CACHE="$HOME/.claude/plugins/cache/claudeclaw/claudeclaw/1.0.0"
+BOTS_DIR="/home/jack/bots"
 DRY_RUN=false
 
 for arg in "$@"; do
@@ -39,4 +40,7 @@ echo "Plugin cache updated."
 echo "Restarting berty..."
 sudo systemctl restart berty
 
-echo "Done. Berty is running production @ $COMMIT"
+echo "Restarting Docker bots..."
+docker compose -f "$BOTS_DIR/docker-compose.yml" restart gardener chef dr-chad dr-bob bookworm coach
+
+echo "Done. All bots running production @ $COMMIT"
