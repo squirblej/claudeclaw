@@ -41,6 +41,6 @@ echo "Restarting berty..."
 sudo systemctl restart berty
 
 echo "Restarting Docker bots..."
-docker compose -f "$BOTS_DIR/docker-compose.yml" restart gardener chef dr-chad dr-bob bookworm coach
+docker compose -f "$BOTS_DIR/docker-compose.yml" restart gardener chef dr-chad dr-bob bookworm coach coach-tom homebot
 
 echo "Done. All bots running production @ $COMMIT"
