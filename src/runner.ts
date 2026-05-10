@@ -553,8 +553,9 @@ async function runClaudeStream(
                 const toolName = streamPendingToolCalls.get(block.tool_use_id) ?? "?";
                 streamPendingToolCalls.delete(block.tool_use_id);
                 const text = extractToolResultText(block.content);
-                const firstLine = text.split("\n")[0].slice(0, 80);
-                const summary = block.is_error ? `Error: ${firstLine}` : (firstLine || "done");
+                const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+                const resultLine = (block.is_error ? lines[0] : lines[lines.length - 1] ?? "done").slice(0, 120);
+                const summary = block.is_error ? `Error: ${resultLine}` : (resultLine || "done");
                 onToolEvent(`  ⎿  [${toolName}] ${summary}`);
               }
             }
@@ -594,16 +595,18 @@ async function runClaudeStream(
 }
 
 function formatToolCallSummary(name: string, input: Record<string, unknown>): string {
-  const s = (v: unknown, max = 50) => String(v ?? "").slice(0, max);
+  const s = (v: unknown, max = 80) => String(v ?? "").slice(0, max);
   switch (name) {
     case "Write":
     case "Edit":
     case "Read":    return `${name}(${s(input.file_path)})`;
-    case "Bash":    return `Bash(${s(input.command, 60)})`;
+    case "Bash":    return input.description
+      ? `Bash: ${s(input.description)}`
+      : `Bash(${s(input.command, 80)})`;
     case "Grep":    return `Grep(${s(input.pattern)} in ${s(input.path ?? ".")})`;
     case "Glob":    return `Glob(${s(input.pattern)})`;
     case "WebSearch": return `WebSearch(${s(input.query)})`;
-    case "WebFetch":  return `WebFetch(${s(input.url, 60)})`;
+    case "WebFetch":  return `WebFetch(${s(input.url)})`;
     default:        return `${name}(...)`;
   }
 }
@@ -702,8 +705,9 @@ async function runClaudeStreaming(
               const name = pendingToolCalls.get(block.tool_use_id) ?? "?";
               pendingToolCalls.delete(block.tool_use_id);
               const text = extractToolResultText(block.content);
-              const firstLine = text.split("\n")[0].slice(0, 80);
-              const summary = block.is_error ? `Error: ${firstLine}` : (firstLine || "done");
+              const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+              const resultLine = (block.is_error ? lines[0] : lines[lines.length - 1] ?? "done").slice(0, 120);
+              const summary = block.is_error ? `Error: ${resultLine}` : (resultLine || "done");
               onToolEvent(`  ⎿  [${name}] ${summary}`);
             }
           }
