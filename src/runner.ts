@@ -1028,7 +1028,8 @@ async function execClaude(
   agentName?: string,
   timeoutCategory?: string,
   onChunk?: (text: string) => void,
-  onToolEvent?: (line: string) => void
+  onToolEvent?: (line: string) => void,
+  compactOnTimeout: boolean = true,
 ): Promise<RunResult> {
   mainRunCount++;
   persistRunCount();
@@ -1366,7 +1367,7 @@ async function execClaude(
   }
 
   // --- Auto-compact on timeout (exit 124) ---
-  if (COMPACT_TIMEOUT_ENABLED && exitCode === 124 && !isNew && existing && !recoveredFromStale) {
+  if (COMPACT_TIMEOUT_ENABLED && compactOnTimeout && exitCode === 124 && !isNew && existing && !recoveredFromStale) {
     emitCompactEvent({ type: "auto-compact-start" });
     const compactOk = await runCompact(
       existing.sessionId,
@@ -1436,9 +1437,10 @@ export async function run(
   agentName?: string,
   timeoutCategory?: string,
   onChunk?: (text: string) => void,
-  onToolEvent?: (line: string) => void
+  onToolEvent?: (line: string) => void,
+  compactOnTimeout: boolean = true,
 ): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt, threadId, modelOverride, timeoutMs, agentName, timeoutCategory, onChunk, onToolEvent), threadId);
+  return enqueue(() => execClaude(name, prompt, threadId, modelOverride, timeoutMs, agentName, timeoutCategory, onChunk, onToolEvent, compactOnTimeout), threadId);
 }
 
 async function streamClaude(
@@ -1670,9 +1672,10 @@ export async function runUserMessage(
   agentName?: string,
   onChunk?: (text: string) => void,
   onToolEvent?: (line: string) => void,
-  modelOverride?: string
+  modelOverride?: string,
+  compactOnTimeout: boolean = true,
 ): Promise<RunResult> {
-  return run(name, prefixUserMessageWithClock(prompt), threadId, modelOverride, undefined, agentName, undefined, onChunk, onToolEvent);
+  return run(name, prefixUserMessageWithClock(prompt), threadId, modelOverride, undefined, agentName, undefined, onChunk, onToolEvent, compactOnTimeout);
 }
 
 // Path where Claude Code stores session JSONL transcripts for this project

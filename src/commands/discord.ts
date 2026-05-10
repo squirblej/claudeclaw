@@ -1089,6 +1089,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
         );
       }
     }
+    const compactOnTimeout = config.sessionMode === "headless";
     if (config.streaming) {
       streamCb = makeDiscordStreamCallback(config.token, channelId);
     }
@@ -1102,6 +1103,8 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
           threadInfo?.agentName,
           streamCb?.onChunk,
           streamCb?.onToolEvent,
+          undefined,
+          compactOnTimeout,
         );
       } finally {
         if (streamCb) {
@@ -1116,7 +1119,11 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     if (depthAfter > 0) botTriggerDepth.set(channelId, depthAfter - 1);
 
     if (result.exitCode !== 0) {
-      await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${extractErrorDetail(result) || "Unknown error"}`, undefined, replyToId);
+      if (result.exitCode === 124 && config.sessionMode === "interactive") {
+        await sendMessage(config.token, channelId, "I ran out of time on that. Reply to continue, or tell me what you'd like to do next.", undefined, replyToId);
+      } else {
+        await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${extractErrorDetail(result) || "Unknown error"}`, undefined, replyToId);
+      }
     } else {
       const { cleanedText, reactionEmoji } = extractReactionDirective(result.stdout || "");
       if (reactionEmoji) {

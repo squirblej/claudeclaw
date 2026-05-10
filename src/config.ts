@@ -79,7 +79,7 @@ const DEFAULT_SETTINGS: Settings = {
     forwardToTelegram: true,
   },
   telegram: { token: "", allowedUserIds: [], listenChats: [], receiveEnabled: true, dmIsolation: "shared" },
-  discord: { token: "", allowedUserIds: [], listenChannels: [], listenGuilds: [], imageOutputRoots: [], streaming: false, allowedChannels: [], trustedBotIds: [], maxBotTriggerDepth: 1 },
+  discord: { token: "", allowedUserIds: [], listenChannels: [], listenGuilds: [], imageOutputRoots: [], streaming: false, allowedChannels: [], trustedBotIds: [], maxBotTriggerDepth: 1, sessionMode: "interactive" },
   slack: { botToken: "", appToken: "", allowedUserIds: [], listenChannels: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
@@ -134,6 +134,7 @@ export interface DiscordConfig {
   allowedChannels: string[]; // When non-empty, bot ignores all messages outside these channels (even mentions)
   trustedBotIds: string[];  // Discord user IDs of peer ClaudeClaw bots
   maxBotTriggerDepth: number; // Max bot→bot reply hops before suppressing (default 1)
+  sessionMode: "interactive" | "headless"; // interactive: stop on timeout and ask; headless: compact+retry
 }
 
 export interface SlackConfig {
@@ -377,6 +378,7 @@ function parseSettings(
       maxBotTriggerDepth: Number.isFinite(raw.discord?.maxBotTriggerDepth)
         ? Number(raw.discord.maxBotTriggerDepth)
         : 1,
+      sessionMode: raw.discord?.sessionMode === "headless" ? "headless" : "interactive",
     },
     slack: {
       botToken: process.env.SLACK_BOT_TOKEN?.trim() || (typeof raw.slack?.botToken === "string" ? raw.slack.botToken.trim() : ""),
