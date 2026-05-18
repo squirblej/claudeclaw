@@ -755,21 +755,22 @@ async function handleMessageCreate(token: string, message: DiscordMessage, skipC
     if (!config.trustedBotIds.includes(message.author.id)) return;
 
     const channelId = message.channel_id;
-    const content = message.content.replace(/\0/g, "").trim();
-    const line = `[Discord from ${message.author.username} | peer-bot] Message: ${content}`;
-
-    const buf = pendingBotMessages.get(channelId) ?? [];
-    buf.push(line);
-    pendingBotMessages.set(channelId, buf);
-
-    // Only trigger a run if this bot was @mentioned AND depth allows
     const triggerReason = message.guild_id ? guildTriggerReason(message) : null;
     const isMention = triggerReason === "mention" || triggerReason === "mention_in_content";
     const depth = botTriggerDepth.get(channelId) ?? 0;
-    if (!isMention || depth >= (config.maxBotTriggerDepth ?? 1)) return;
+
+    if (!isMention || depth >= (config.maxBotTriggerDepth ?? 1)) {
+      // Not triggering a run — buffer as context for the next triggered message
+      const content = message.content.replace(/\0/g, "").trim();
+      const line = `[Discord from ${message.author.username} | peer-bot] Message: ${content}`;
+      const buf = pendingBotMessages.get(channelId) ?? [];
+      buf.push(line);
+      pendingBotMessages.set(channelId, buf);
+      return;
+    }
 
     botTriggerDepth.set(channelId, depth + 1);
-    // Fall through to normal message handling as a triggered run
+    // Fall through to normal message handling — the message will appear once as the Message: line
   }
 
   const userId = message.author.id;
