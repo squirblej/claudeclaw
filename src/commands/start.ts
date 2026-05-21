@@ -220,6 +220,7 @@ export async function start(args: string[] = []) {
   let telegramFlag = false;
   let discordFlag = false;
   let slackFlag = false;
+  let httpFlag = false;
   let debugFlag = false;
   let webFlag = false;
   let replaceExistingFlag = false;
@@ -238,6 +239,8 @@ export async function start(args: string[] = []) {
       discordFlag = true;
     } else if (arg === "--slack") {
       slackFlag = true;
+    } else if (arg === "--http") {
+      httpFlag = true;
     } else if (arg === "--debug") {
       debugFlag = true;
     } else if (arg === "--web") {
@@ -263,7 +266,7 @@ export async function start(args: string[] = []) {
   }
   const payload = payloadParts.join(" ").trim();
   if (hasPromptFlag && !payload) {
-    console.error("Usage: claudeclaw start --prompt <prompt> [--trigger] [--telegram] [--discord] [--slack] [--debug] [--web] [--web-port <port>] [--replace-existing]");
+    console.error("Usage: claudeclaw start --prompt <prompt> [--trigger] [--telegram] [--discord] [--slack] [--http] [--debug] [--web] [--web-port <port>] [--replace-existing]");
     process.exit(1);
   }
   if (!hasPromptFlag && payload) {
@@ -280,6 +283,10 @@ export async function start(args: string[] = []) {
   }
   if (slackFlag && !hasTriggerFlag) {
     console.error("`--slack` with `start` requires `--trigger`.");
+    process.exit(1);
+  }
+  if (httpFlag && !hasTriggerFlag) {
+    console.error("`--http` with `start` requires `--trigger`.");
     process.exit(1);
   }
   if (hasPromptFlag && !hasTriggerFlag && (webFlag || webPortFlag !== null)) {
@@ -345,6 +352,7 @@ export async function start(args: string[] = []) {
   let web: WebServerHandle | null = null;
   let discordStopGateway: (() => void) | null = null;
   let slackStopFn: (() => void) | null = null;
+  let httpStopFn: (() => void) | null = null;
 
   // Plugin system — initialize before gateway start
   const pluginManager = new PluginManager(process.cwd());
@@ -358,6 +366,7 @@ export async function start(args: string[] = []) {
     setPluginManager(null);
     if (discordStopGateway) discordStopGateway();
     if (slackStopFn) slackStopFn();
+    if (httpStopFn) httpStopFn();
     if (web) web.stop();
     await teardownStatusline();
     await cleanupPidFile();
@@ -471,6 +480,26 @@ export async function start(args: string[] = []) {
 
   await initSlack(currentSettings.slack.botToken, currentSettings.slack.appToken);
   if (!slackBotToken) console.log("  Slack: not configured");
+
+  // --- HTTP channel ---
+  let httpEnabled = false;
+  async function initHttp(enabled: boolean) {
+    if (enabled && !httpEnabled) {
+      const { startHttp, stopHttp } = await import("./http");
+      startHttp(debugFlag);
+      httpStopFn = stopHttp;
+      httpEnabled = true;
+      console.log(`[${ts()}] HTTP channel: enabled`);
+    } else if (!enabled && httpEnabled) {
+      if (httpStopFn) httpStopFn();
+      httpStopFn = null;
+      httpEnabled = false;
+      console.log(`[${ts()}] HTTP channel: disabled`);
+    }
+  }
+
+  await initHttp(currentSettings.http.enabled);
+  if (!httpEnabled) console.log("  HTTP channel: not configured");
 
   // Wire channel senders into plugin runtime so plugins can send messages
   if (pluginManager.hasPlugins) {

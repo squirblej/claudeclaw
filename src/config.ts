@@ -81,6 +81,7 @@ const DEFAULT_SETTINGS: Settings = {
   telegram: { token: "", allowedUserIds: [], listenChats: [], receiveEnabled: true, dmIsolation: "shared" },
   discord: { token: "", allowedUserIds: [], listenChannels: [], listenGuilds: [], imageOutputRoots: [], streaming: false, allowedChannels: [], trustedBotIds: [], maxBotTriggerDepth: 1, sessionMode: "interactive" },
   slack: { botToken: "", appToken: "", allowedUserIds: [], listenChannels: [] },
+  http: { enabled: false, host: "127.0.0.1", port: 7088, serviceToken: "", allowedAgents: ["*"], maxBodyBytes: 1048576, cors: { enabled: false, origins: [] } },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   web: { enabled: false, host: "127.0.0.1", port: 4632 },
   stt: { baseUrl: "", model: "" },
@@ -144,6 +145,19 @@ export interface SlackConfig {
   listenChannels: string[]; // Channel IDs where bot responds without @mention
 }
 
+export interface HttpConfig {
+  enabled: boolean;
+  host: string;
+  port: number;
+  serviceToken: string;        // long-lived bearer; required when enabled
+  allowedAgents: string[];     // which agent configs may be hosted, ["*"] = all
+  maxBodyBytes: number;
+  cors: {
+    enabled: boolean;
+    origins: string[];
+  };
+}
+
 export type SecurityLevel =
   | "locked"
   | "strict"
@@ -178,6 +192,7 @@ export interface Settings {
   telegram: TelegramConfig;
   discord: DiscordConfig;
   slack: SlackConfig;
+  http: HttpConfig;
   security: SecurityConfig;
   web: WebConfig;
   stt: SttConfig;
@@ -385,6 +400,22 @@ function parseSettings(
       appToken: process.env.SLACK_APP_TOKEN?.trim() || (typeof raw.slack?.appToken === "string" ? raw.slack.appToken.trim() : ""),
       allowedUserIds: Array.isArray(raw.slack?.allowedUserIds) ? raw.slack.allowedUserIds.map(String) : [],
       listenChannels: Array.isArray(raw.slack?.listenChannels) ? raw.slack.listenChannels.map(String) : [],
+    },
+    http: {
+      enabled: raw.http?.enabled === true,
+      host: typeof raw.http?.host === "string" && raw.http.host.trim() ? raw.http.host.trim() : "127.0.0.1",
+      port: Number.isFinite(raw.http?.port) ? Number(raw.http.port) : 7088,
+      serviceToken: process.env.CLAUDECLAW_HTTP_TOKEN?.trim() || (typeof raw.http?.serviceToken === "string" ? raw.http.serviceToken.trim() : ""),
+      allowedAgents: Array.isArray(raw.http?.allowedAgents)
+        ? raw.http.allowedAgents.map(String)
+        : ["*"],
+      maxBodyBytes: Number.isFinite(raw.http?.maxBodyBytes) && Number(raw.http.maxBodyBytes) > 0
+        ? Number(raw.http.maxBodyBytes)
+        : 1048576,
+      cors: {
+        enabled: raw.http?.cors?.enabled === true,
+        origins: Array.isArray(raw.http?.cors?.origins) ? raw.http.cors.origins.map(String) : [],
+      },
     },
     security: {
       level,
