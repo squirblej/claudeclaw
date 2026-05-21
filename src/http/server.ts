@@ -13,6 +13,8 @@ import { getSettings } from "../config";
 import { checkBearer, isAgentAllowed } from "./auth";
 import { publish, subscribe, type SseEvent, type Subscriber } from "./streamHub";
 import { runForChannel } from "./runner-bridge";
+import { internalThreadId, parseInternalThreadId } from "./threadId";
+import { peekThreadSession, removeThreadSession, listThreadSessions } from "../sessionManager";
 
 const SERVER_VERSION = "0.1.0";
 let startedAt = 0;
@@ -79,6 +81,62 @@ async function handleHealth(): Promise<Response> {
     version: SERVER_VERSION,
     uptime_sec: Math.floor((Date.now() - startedAt) / 1000),
   });
+}
+
+async function handleReset(channelId: string, agent: string): Promise<Response> {
+  if (!isAgentAllowed(agent)) return jsonResponse(403, { error: `agent '${agent}' not in allowedAgents` });
+  const tid = internalThreadId(agent, channelId);
+  const existing = await peekThreadSession(tid);
+  if (!existing) return jsonResponse(404, { error: "channel has no active session" });
+  await removeThreadSession(tid);
+  publish(channelId, {
+    type: "agent_busy",
+    busy: false,
+  });
+  return jsonResponse(200, {
+    channel_id: channelId,
+    agent,
+    previous_session_id: existing.sessionId,
+    message: "Next message will start a fresh CC session for this channel.",
+  });
+}
+
+async function handleDelete(channelId: string, agent: string): Promise<Response> {
+  if (!isAgentAllowed(agent)) return jsonResponse(403, { error: `agent '${agent}' not in allowedAgents` });
+  const tid = internalThreadId(agent, channelId);
+  const existing = await peekThreadSession(tid);
+  if (!existing) return new Response(null, { status: 204 });
+  await removeThreadSession(tid);
+  return new Response(null, { status: 204 });
+}
+
+async function handleList(agentFilter: string | null): Promise<Response> {
+  if (agentFilter && !isAgentAllowed(agentFilter)) {
+    return jsonResponse(403, { error: `agent '${agentFilter}' not in allowedAgents` });
+  }
+  const all = await listThreadSessions();
+  const channels: Array<{
+    channel_id: string;
+    agent: string;
+    session_id: string;
+    created_at: string;
+    last_used_at: string;
+    turn_count: number;
+  }> = [];
+  for (const s of all) {
+    const parsed = parseInternalThreadId(s.threadId);
+    if (!parsed) continue;
+    if (agentFilter && parsed.agent !== agentFilter) continue;
+    channels.push({
+      channel_id: parsed.channelId,
+      agent: parsed.agent,
+      session_id: s.sessionId,
+      created_at: s.createdAt,
+      last_used_at: s.lastUsedAt,
+      turn_count: s.turnCount,
+    });
+  }
+  return jsonResponse(200, { channels });
 }
 
 async function handlePostMessage(req: Request, channelId: string): Promise<Response> {
@@ -189,6 +247,11 @@ async function route(req: Request): Promise<Response> {
   const auth = checkBearer(req);
   if (!auth.ok) return jsonResponse(auth.status, auth.body, corsHeaders());
 
+  // GET /v1/channels?agent=<name> — list (no channel_id in path)
+  if (url.pathname === "/v1/channels" && method === "GET") {
+    return handleList(url.searchParams.get("agent"));
+  }
+
   const parsed = parseChannelPath(url.pathname);
   if (parsed) {
     const { channelId, tail } = parsed;
@@ -203,6 +266,16 @@ async function route(req: Request): Promise<Response> {
     }
     if (tail === "stream" && method === "GET") {
       return handleStream(channelId);
+    }
+    if (tail === "reset" && method === "POST") {
+      const agent = url.searchParams.get("agent");
+      if (!agent) return jsonResponse(400, { error: "?agent= query param required" });
+      return handleReset(channelId, agent);
+    }
+    if (tail === "" && method === "DELETE") {
+      const agent = url.searchParams.get("agent");
+      if (!agent) return jsonResponse(400, { error: "?agent= query param required" });
+      return handleDelete(channelId, agent);
     }
   }
 

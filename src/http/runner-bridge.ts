@@ -14,6 +14,7 @@
 
 import { runUserMessage } from "../runner";
 import { publish } from "./streamHub";
+import { internalThreadId } from "./threadId";
 
 export interface RunRequest {
   channelId: string;
@@ -48,8 +49,8 @@ export async function runForChannel(req: RunRequest): Promise<void> {
     const result = await runUserMessage(
       agent,
       prompt,
-      channelId,              // threadId — gives us a per-channel CC session
-      agent,                  // agentName — picks up per-agent CLAUDE.md if configured
+      internalThreadId(agent, channelId),  // namespaced so two agents can share a channel_id
+      agent,                                // agentName — picks up per-agent CLAUDE.md if configured
       onChunk,
       onToolEvent,
     );

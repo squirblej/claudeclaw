@@ -153,23 +153,35 @@ GET    /v1/channels/:channel_id/stream
 
 ### Channel admin (minimal)
 
-```
-POST   /v1/channels/:channel_id/reset
-       → 200 { previous_session_id, new_session_id? }
-       Clears the CC session for the channel (next message starts fresh
-       context). Mirrors what `claudeclaw clear` does for the global session.
+CC's `sessions.json` is shared across all surfaces. HTTP channels are
+internally namespaced as `http:<agent>:<channel_id>` so two agents can
+legitimately reuse the same `channel_id` without colliding. Reset/delete
+therefore require `?agent=<name>` to disambiguate.
 
-DELETE /v1/channels/:channel_id
+```
+POST   /v1/channels/:channel_id/reset?agent=<name>
+       → 200 { channel_id, agent, previous_session_id, message }
+       Clears the CC thread session for this (agent, channel) pair. Next
+       message on this channel will start a fresh CC session. Mirrors what
+       `claudeclaw clear` does for the global session.
+       → 404 if no session exists yet.
+
+DELETE /v1/channels/:channel_id?agent=<name>
        → 204
-       Removes the session mapping. Embedding app's own data is untouched.
+       Removes the session mapping. Idempotent — 204 even if there was no
+       existing mapping. The embedding app's own data is untouched.
 ```
 
 ### Listing (cheap, derived from sessionManager)
 
 ```
-GET    /v1/channels?agent=
-       → 200 { channels: [{ channel_id, agent, last_used_at, turn_count }] }
-       Reads from sessionManager's existing data; no new storage required.
+GET    /v1/channels?agent=<name>
+       → 200 { channels: [{ channel_id, agent, session_id, created_at,
+                            last_used_at, turn_count }] }
+       Lists all live HTTP-channel thread sessions, optionally filtered by
+       agent. Reads from sessionManager.listThreadSessions() and unwraps
+       the http:<agent>:<channel_id> prefix; non-HTTP threads (Discord,
+       Slack, Telegram) are excluded.
 ```
 
 That's the whole surface for v1.
@@ -258,11 +270,12 @@ v0.1 used `streamUserMessage` (the daemon-chat path) which lacks threadId, fallb
 - Tool visibility: `runUserMessage` exposes `onToolEvent(line)` with pre-formatted strings (`● [ToolName] summary`, `  ⎿  [ToolName] result`). HTTP relays each line as a `tool_activity` SSE event. (Structured tool events are a possible future improvement once `execClaude` exposes them.)
 - No `runner.ts` changes needed.
 
-### v0.3 — Channel admin
+### v0.3 — Channel admin ✅
 
-- POST `/v1/channels/:id/reset` — clears the thread session, next message starts fresh
-- DELETE `/v1/channels/:id` — removes the thread session mapping
-- GET `/v1/channels?agent=` — lists from `sessionManager.listThreadSessions()`
+- POST `/v1/channels/:id/reset?agent=<name>` — clears the thread session; next message starts fresh
+- DELETE `/v1/channels/:id?agent=<name>` — removes the thread session mapping; idempotent
+- GET `/v1/channels?agent=<name>` — lists HTTP-channel thread sessions, optional agent filter
+- Internal threadIds namespaced as `http:<agent>:<channel_id>` so two agents can share a `channel_id` without colliding in `sessions.json`. (Cross-cutting concern flagged: Discord/Slack/Telegram threads avoid collisions only by accident of differing ID spaces; project-wide namespacing is out of scope here but precedent is set.)
 
 ### v0.4 — Itineraries integration
 

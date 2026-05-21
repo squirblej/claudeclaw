@@ -80,6 +80,15 @@
     </form>
   </fieldset>
 
+  <fieldset>
+    <legend>Admin</legend>
+    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+      <button id="reset-btn" type="button">Reset session</button>
+      <button id="delete-btn" type="button">Delete channel</button>
+      <button id="list-btn" type="button">List channels</button>
+    </div>
+  </fieldset>
+
   <div id="log"></div>
 
   <script>
@@ -212,6 +221,41 @@
           appendMsg("sys", event, JSON.stringify(payload));
       }
     }
+
+    async function adminCall(method, pathTail, expectBody) {
+      const base = $("base").value.trim().replace(/\/$/, "");
+      const channel = encodeURIComponent($("channel").value.trim());
+      const token = $("token").value.trim();
+      const agent = $("agent").value.trim();
+      if (!token || !agent) { alert("token and agent required"); return; }
+      const url = `${base}/v1/channels/${channel}${pathTail}?agent=${encodeURIComponent(agent)}`;
+      try {
+        const resp = await fetch(url, { method, headers: { Authorization: `Bearer ${token}` } });
+        const text = await resp.text();
+        const label = `${method} ${pathTail || "/"}`;
+        if (resp.ok) appendMsg("sys", "admin", `${label} → ${resp.status} ${text || "(empty)"}`);
+        else appendMsg("err", "admin", `${label} → ${resp.status} ${text}`);
+      } catch (err) {
+        appendMsg("err", "admin", `${method} ${pathTail}: ${err}`);
+      }
+    }
+
+    $("reset-btn").addEventListener("click", () => adminCall("POST", "/reset"));
+    $("delete-btn").addEventListener("click", () => adminCall("DELETE", ""));
+    $("list-btn").addEventListener("click", async () => {
+      const base = $("base").value.trim().replace(/\/$/, "");
+      const token = $("token").value.trim();
+      const agent = $("agent").value.trim();
+      if (!token) { alert("token required"); return; }
+      const url = `${base}/v1/channels${agent ? `?agent=${encodeURIComponent(agent)}` : ""}`;
+      try {
+        const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        const text = await resp.text();
+        appendMsg("sys", "admin", `GET /v1/channels → ${resp.status}\n${text}`);
+      } catch (err) {
+        appendMsg("err", "admin", `GET /v1/channels: ${err}`);
+      }
+    });
 
     $("send-form").addEventListener("submit", async (e) => {
       e.preventDefault();
