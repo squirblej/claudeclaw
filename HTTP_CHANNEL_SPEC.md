@@ -238,27 +238,31 @@ Reuse `runner.ts`'s per-thread queue (it already serialises per-thread runs). HT
 
 ## Roadmap
 
-### v0.1 — Walking skeleton (this branch's first deliverable)
+### v0.1 — Walking skeleton ✅
 
 - Config + `start --http` wiring
 - `http.ts` + `server.ts` + bearer auth middleware
 - POST `/v1/channels/:id/messages`
 - GET `/v1/channels/:id/stream` with `user_message` / `agent_token` / `agent_complete` events
 - Health endpoint
-- Manual test page (`examples/http-channel-tester.html`) with curl + EventSource
+- Manual test page (`examples/http-channel-tester.html`)
 
-Acceptance: from the test page, post a message, see streamed reply appear; open a second tab, see the first tab's posts arrive as `user_message` events.
+v0.1 used `streamUserMessage` (the daemon-chat path) which lacks threadId, fallback handling, timeouts, and agentName support — so all HTTP channels shared the global CC session.
 
-### v0.2 — Tool visibility
+### v0.2 — Per-channel CC sessions ✅
 
-- `tool_call_start` / `tool_call_result` SSE events wired from `onAgentEvent`
-- Test: trigger an agent that uses a tool, observe both events
+- HTTP channel switched to `runUserMessage`, mirroring Discord/Slack/Telegram (they all use it; `streamUserMessage` is only used by the daemon's "chat" command in `start.ts`).
+- HTTP channels pass `channelId` as the `threadId` argument, getting an independent `sessionManager` thread session per channel. Concurrent runs on different channels do not share context; same-channel runs serialise via the runner's per-thread queue.
+- HTTP channels pass `agent` as the `agentName` argument, so per-agent CLAUDE.md and agent dir conventions apply.
+- Inherits fallback session handling, timeouts, watchdog, and stale-session recovery from `execClaude` for free.
+- Tool visibility: `runUserMessage` exposes `onToolEvent(line)` with pre-formatted strings (`● [ToolName] summary`, `  ⎿  [ToolName] result`). HTTP relays each line as a `tool_activity` SSE event. (Structured tool events are a possible future improvement once `execClaude` exposes them.)
+- No `runner.ts` changes needed.
 
 ### v0.3 — Channel admin
 
-- POST `/v1/channels/:id/reset`
-- DELETE `/v1/channels/:id`
-- GET `/v1/channels?agent=` (lists from sessionManager)
+- POST `/v1/channels/:id/reset` — clears the thread session, next message starts fresh
+- DELETE `/v1/channels/:id` — removes the thread session mapping
+- GET `/v1/channels?agent=` — lists from `sessionManager.listThreadSessions()`
 
 ### v0.4 — Itineraries integration
 

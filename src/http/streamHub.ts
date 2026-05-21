@@ -10,8 +10,7 @@
 export type SseEvent =
   | { type: "user_message"; user_id: string; content: string; attachments?: unknown[]; client_message_id?: string; posted_at: number }
   | { type: "agent_token"; run_id: string; text: string }
-  | { type: "tool_call_start"; run_id: string; tool_call_id: string; tool_name: string; args?: unknown }
-  | { type: "tool_call_result"; run_id: string; tool_call_id: string; result?: unknown; error?: string }
+  | { type: "tool_activity"; run_id: string; text: string }       // pre-formatted "● [Tool] summary" or "  ⎿  result" line from runUserMessage's onToolEvent
   | { type: "agent_complete"; run_id: string; final_text: string; ended_at: number }
   | { type: "agent_busy"; busy: boolean }
   | { type: "error"; run_id?: string; code: string; message: string }

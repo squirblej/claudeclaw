@@ -1,13 +1,18 @@
 /**
- * Bridge from runner.ts streamUserMessage into SSE events on streamHub.
+ * Bridge from runner.ts runUserMessage into SSE events on streamHub.
  *
- * v0.1 caveat: streamUserMessage uses the global CC session (per-thread
- * sessions for HTTP channels are a v0.2/0.3 follow-up — the existing
- * sessionManager already supports it; runner.ts needs a small extension to
- * pass through a threadId, tracked separately).
+ * Each HTTP channel maps to its own CC session: the channelId is passed as
+ * the threadId, exactly like Discord/Slack/Telegram do. Per-channel runs
+ * serialise via the runner's per-thread queue.
+ *
+ * runUserMessage exposes streaming via two callbacks:
+ *   - onChunk(text)        → token deltas (fan out as agent_token)
+ *   - onToolEvent(line)    → human-readable tool call/result lines
+ *                            ("● [ToolName] summary", "  ⎿  [ToolName] result")
+ * We pass these straight through; the embedding app decides how to render.
  */
 
-import { streamUserMessage, type AgentStreamEvent } from "../runner";
+import { runUserMessage } from "../runner";
 import { publish } from "./streamHub";
 
 export interface RunRequest {
@@ -19,7 +24,7 @@ export interface RunRequest {
 
 /**
  * Start an agent run for a channel. Resolves when the agent has finished
- * (success or error); events are streamed to subscribers throughout.
+ * (success or error); events stream throughout.
  *
  * Errors are reported via SSE `error` events; this function does not throw
  * for run-time failures — the caller (POST /messages handler) has already
@@ -34,32 +39,29 @@ export async function runForChannel(req: RunRequest): Promise<void> {
     publish(channelId, { type: "agent_token", run_id: runId, text });
   };
 
-  const onUnblock = () => {
-    // Could emit an "agent_typing" or similar; for v0.1 the first agent_token
-    // event is the visible signal that the agent has started replying.
-  };
-
-  const onAgentEvent = (ev: AgentStreamEvent) => {
-    if (ev.type === "spawn") {
-      publish(channelId, {
-        type: "tool_call_start",
-        run_id: runId,
-        tool_call_id: ev.id,
-        tool_name: ev.description || "Agent",
-      });
-    } else if (ev.type === "done") {
-      publish(channelId, {
-        type: "tool_call_result",
-        run_id: runId,
-        tool_call_id: ev.id,
-        result: ev.result,
-      });
-    }
+  const onToolEvent = (line: string) => {
+    publish(channelId, { type: "tool_activity", run_id: runId, text: line });
   };
 
   publish(channelId, { type: "agent_busy", busy: true });
   try {
-    await streamUserMessage(agent, prompt, onChunk, onUnblock, onAgentEvent);
+    const result = await runUserMessage(
+      agent,
+      prompt,
+      channelId,              // threadId — gives us a per-channel CC session
+      agent,                  // agentName — picks up per-agent CLAUDE.md if configured
+      onChunk,
+      onToolEvent,
+    );
+    if (result.exitCode !== 0) {
+      const detail = (result.stderr || result.stdout || "").trim().slice(0, 4000);
+      publish(channelId, {
+        type: "error",
+        run_id: runId,
+        code: `agent_exit_${result.exitCode}`,
+        message: detail || `agent exited with code ${result.exitCode}`,
+      });
+    }
     publish(channelId, {
       type: "agent_complete",
       run_id: runId,

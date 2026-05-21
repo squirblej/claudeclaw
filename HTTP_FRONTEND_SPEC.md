@@ -53,19 +53,19 @@ The full transcript (every user message, every agent reply, every tool call you 
 Agent responses arrive as a sequence of events:
 
 ```
-agent_token { run_id, text }  ← many
-agent_token { run_id, text }
-tool_call_start { run_id, tool_call_id, tool_name, args }
-tool_call_result { run_id, tool_call_id, result }
-agent_token { run_id, text }
-agent_complete { run_id, final_text }
+agent_token   { run_id, text }   ← many
+agent_token   { run_id, text }
+tool_activity { run_id, text }   ← "● [ToolName] summary"  (tool call started)
+tool_activity { run_id, text }   ← "  ⎿  [ToolName] result" (tool result)
+agent_token   { run_id, text }
+agent_complete{ run_id, final_text }
 ```
 
 The embedding app must:
 
 - On the first `agent_token` for a `run_id`: insert a `chat_messages` row with role='agent', `client_message_id = run_id`, content = "" (or the first chunk), `is_partial = 1`.
 - On subsequent `agent_token`s: append text to that row.
-- On `tool_call_start`/`tool_call_result`: either persist into a `tool_calls_json` array on the row, or into a sibling table. Up to the embedding app whether to render tool activity inline, in a side panel, or hide entirely.
+- On `tool_activity`: the `text` field is a pre-formatted human-readable line (matches how the Discord adapter renders tool calls). The embedding app can append it to a `tool_log` array on the row, render it inline in muted text, render in a side panel, or hide entirely. The leading character indicates kind: `●` is a tool call start, `⎿` is a result line.
 - On `agent_complete`: set content to `final_text` (canonical version — supersedes any token concatenation, which may have edge cases around partial UTF-8 or markdown), `is_partial = 0`.
 - On `error`: persist the error against the run_id row and surface to the UI.
 

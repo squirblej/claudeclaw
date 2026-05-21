@@ -195,11 +195,8 @@
           currentAgentRun.el.appendChild(document.createTextNode(payload.text));
           log.scrollTop = log.scrollHeight;
           break;
-        case "tool_call_start":
-          appendMsg("tool", `tool:${payload.tool_name}`, `start (${payload.tool_call_id.slice(0, 8)})`);
-          break;
-        case "tool_call_result":
-          appendMsg("tool", `tool`, `done (${payload.tool_call_id.slice(0, 8)})`);
+        case "tool_activity":
+          appendMsg("tool", "tool", payload.text);
           break;
         case "agent_complete":
           appendMsg("sys", "sys", `agent_complete (${payload.run_id.slice(0, 8)})`);
