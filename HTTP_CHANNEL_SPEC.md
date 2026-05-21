@@ -12,7 +12,7 @@ Specifically:
 
 1. **Embed-ready**: no UI, no opinion on auth. Frontend-agnostic JSON + SSE.
 2. **Multi-channel**: one agent can host many independent conversations (per-user, per-trip, per-athlete, etc.).
-3. **Multi-user-per-channel**: e.g. multiple Cursus athletes writing into the same coach channel; Itineraries having Jack and Jess in the same trip thread.
+3. **Multi-user-per-channel**: e.g. multiple Cursus athletes writing into the same coach channel; Shortlist having Jack and Jess in the same trip thread.
 4. **Streaming-first**: live tokens, tool-call visibility — same UX you get on Discord.
 5. **Stateless w.r.t. messages**: the embedding app is the message store, exactly like Discord is for the Discord adapter. CC only persists what `sessionManager` already persists (per-channel session mapping in `sessions.json`).
 6. **CC discipline preserved**: rotation, plugins, security args all work the same way they do for the Discord channel.
@@ -27,12 +27,12 @@ Specifically:
 
 ## Use cases
 
-### Itineraries (primary v1 driver)
+### Shortlist (primary v1 driver)
 
 - One channel per trip (`channel_id = "trip:chamonix-2026"`) — plus a default channel for general planning.
 - Two users (Jack, Jess) write into the same channel.
-- The Itineraries agent has tools that hit the Itineraries HTTP API (create trip, add event, etc.).
-- The Itineraries DB has its own `chat_messages` table per trip; PWA renders from that, POSTs new messages to CC, streams the reply back, and writes both the user message and the agent reply into its own table.
+- The Shortlist agent has tools that hit the Shortlist HTTP API (create trip, add event, etc.).
+- The Shortlist DB has its own `chat_messages` table per trip; PWA renders from that, POSTs new messages to CC, streams the reply back, and writes both the user message and the agent reply into its own table.
 
 ### Cursus (migration target, v0.5)
 
@@ -82,7 +82,7 @@ Bind to loopback by default; production deployments put it behind Cloudflare Acc
 
 ## Identity model
 
-`user_id` is an opaque string ≤ 128 chars supplied by the embedding app. CC treats it as an attribution label only — it does not store user records. (Cursus's `chat.db` already maps Discord IDs → athletes; that mapping stays in Cursus. Itineraries' DB similarly maps its auth identities → display names.)
+`user_id` is an opaque string ≤ 128 chars supplied by the embedding app. CC treats it as an attribution label only — it does not store user records. (Cursus's `chat.db` already maps Discord IDs → athletes; that mapping stays in Cursus. Shortlist's DB similarly maps its auth identities → display names.)
 
 ## Channels
 
@@ -277,9 +277,9 @@ v0.1 used `streamUserMessage` (the daemon-chat path) which lacks threadId, fallb
 - GET `/v1/channels?agent=<name>` — lists HTTP-channel thread sessions, optional agent filter
 - Internal threadIds namespaced as `http:<agent>:<channel_id>` so two agents can share a `channel_id` without colliding in `sessions.json`. (Cross-cutting concern flagged: Discord/Slack/Telegram threads avoid collisions only by accident of differing ID spaces; project-wide namespacing is out of scope here but precedent is set.)
 
-### v0.4 — Itineraries integration
+### v0.4 — Shortlist integration
 
-- Itineraries v0 ships with chat panel from day one (per Path A)
+- Shortlist v0 ships with chat panel from day one (per Path A)
 - Validates: agent posting through API, PWA streaming UX, two-user concurrency
 
 ### v0.5 — Cursus migration

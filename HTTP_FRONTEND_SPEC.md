@@ -6,7 +6,7 @@
 
 The ClaudeClaw HTTP channel adapter is stateless w.r.t. messages — exactly like the Discord adapter is stateless because Discord is the message store. For HTTP, the *embedding app* is the message store. That means the embedder inherits real responsibility: authentication, persistence, optimistic UI, reconnect handling, attachment hosting, and channel lifecycle.
 
-This document is the checklist of what any frontend integrating the HTTP channel must do. Itineraries and the future Cursus client both need to satisfy these.
+This document is the checklist of what any frontend integrating the HTTP channel must do. Shortlist and the future Cursus client both need to satisfy these.
 
 ## 1. User identity
 
