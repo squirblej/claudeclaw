@@ -212,7 +212,9 @@ function handleStream(channelId: string): Response {
       // Greet the new subscriber so they know the connection is live.
       send({ type: "ping" });
 
-      pingInterval = setInterval(() => send({ type: "ping" }), 30_000);
+      // Ping every 15s — comfortably inside Bun's idleTimeout (255s) and
+      // also keeps proxies (Cloudflare, etc.) from idle-killing the SSE.
+      pingInterval = setInterval(() => send({ type: "ping" }), 15_000);
     },
     cancel() {
       if (pingInterval) clearInterval(pingInterval);
@@ -295,6 +297,10 @@ export function startHttpServer(debug = false): ServerHandle {
   const server = Bun.serve({
     hostname: http.host,
     port: http.port,
+    // SSE connections (`GET /v1/channels/:id/stream`) are long-lived; Bun's
+    // default idleTimeout of 10s closes them before any keepalive ping fires.
+    // 255 is Bun's documented maximum.
+    idleTimeout: 255,
     fetch: route,
     error(err) {
       console.error("[http] server error:", err);
