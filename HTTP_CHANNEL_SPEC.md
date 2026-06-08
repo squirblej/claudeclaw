@@ -130,23 +130,37 @@ POST   /v1/channels/:channel_id/messages
 ### Streaming
 
 ```
-GET    /v1/channels/:channel_id/stream
+GET    /v1/channels/:channel_id/stream[?agent=<name>]
        headers: Authorization: Bearer <serviceToken>
        → text/event-stream
-       
-       Event types (data is JSON):
-         user_message     { user_id, content, attachments, client_message_id?, posted_at }
+
+       The optional ?agent=<name> filters the stream to events from a single
+       agent — used by multi-agent channels (e.g. Kilian + Tadej in
+       coach-chat) where one consumer only wants one bot's traffic. Events
+       without an `agent` field (ping, generic error) always pass.
+
+       Event types (data is JSON). Every agent-attributed event carries an
+       `agent` field so multi-bot channels can demultiplex:
+
+         user_message     { agent?, user_id, content, attachments, client_message_id?, posted_at }
                           — echoed to all subscribers when any user POSTs;
-                          lets multi-user channels see each other live
-         agent_token      { run_id, text }
+                          lets multi-user channels see each other live.
+                          `agent` is the bot the message was addressed to
+                          (POST body's `agent` field).
+         agent_token      { agent, run_id, text }
                           — incremental tokens
-         tool_call_start  { run_id, tool_name, args, tool_call_id }
-         tool_call_result { run_id, tool_call_id, result, error? }
-         agent_complete   { run_id, final_text, ended_at }
-         agent_busy       { busy: bool }       — runner.isBusy() transitions
-         error            { run_id?, code, message }
-         ping             {}                   — every 30s, keepalive
-       
+         tool_activity    { agent, run_id, text }
+                          — pre-formatted "● [Tool] summary" / "  ⎿  result" line
+         agent_complete   { agent, run_id, final_text, ended_at }
+         agent_busy       { agent, busy: bool }
+         session_boundary { agent, previous_session_id, reason, at }
+                          — emitted after a successful /reset, so frontends
+                          can render a divider in the chat history. `reason`
+                          is "user_reset" (normal) or "force_reset" (a run
+                          was in flight and was cancelled).
+         error            { agent?, run_id?, code, message }
+         ping             {}                   — every 15s, keepalive
+
        No replay. New subscribers see only events from connection time forward.
        The embedding app reads its own message history.
 ```
@@ -159,17 +173,77 @@ legitimately reuse the same `channel_id` without colliding. Reset/delete
 therefore require `?agent=<name>` to disambiguate.
 
 ```
-POST   /v1/channels/:channel_id/reset?agent=<name>
-       → 200 { channel_id, agent, previous_session_id, message }
+POST   /v1/channels/:channel_id/reset?agent=<name>[&force=true]
+       → 200 { channel_id, agent, previous_session_id, forced, message }
        Clears the CC thread session for this (agent, channel) pair. Next
        message on this channel will start a fresh CC session. Mirrors what
        `claudeclaw clear` does for the global session.
+
+       On success, emits a `session_boundary` SSE event to the channel so
+       subscribed frontends can render a divider.
+
+       In-flight guard: if a run is currently executing on the thread, the
+       default is 409 Conflict so the frontend can warn the user (their
+       in-flight reply will continue to stream). Pass `?force=true` to
+       cancel the running subprocess (SIGTERM, SIGKILL after 5s) and reset
+       anyway; the session_boundary event then carries reason="force_reset".
+
        → 404 if no session exists yet.
+       → 409 { error, busy: true } if a run is active and force is not set.
+
+POST   /v1/channels/:channel_id/compact?agent=<name>
+       → 200 { channel_id, agent, session_id, message }
+       Compacts the CC thread session in place — keeps continuity but
+       trims context. Distinct from /reset which destroys the session
+       mapping. No session_boundary is emitted (the session_id is unchanged).
+       → 404 if no session exists yet.
+       → 409 { error, busy: true } if a run is active. Caller should retry
+         after waiting for completion.
 
 DELETE /v1/channels/:channel_id?agent=<name>
        → 204
        Removes the session mapping. Idempotent — 204 even if there was no
-       existing mapping. The embedding app's own data is untouched.
+       existing mapping. Does NOT cancel an in-flight run or emit
+       session_boundary; for user-visible resets prefer POST /reset.
+       The embedding app's own data is untouched.
+```
+
+### Multi-agent channels
+
+A single `channel_id` can host any number of agents. The HTTP server
+namespaces threads internally as `http:<agent>:<channel_id>` (in
+`sessions.json`), so each agent gets its own CC session under the same
+channel. Two callers posting to the same `channel_id` with different
+`agent` values address two different bots.
+
+For consumers, three patterns work:
+
+1. **One SSE stream, demultiplex by `agent` field on each event.** Best
+   for chat UIs that want a single merged view of all agents in the
+   channel.
+2. **Two SSE streams, one per agent, with `?agent=<name>` filter.** Best
+   when each agent has its own independent surface.
+3. **Cross-agent context (optional, frontend choice)**: relay each
+   incoming user message to each agent via separate POSTs, with a
+   `[from: <name>]` prefix so the agent knows it's not the sole audience.
+   The server has no opinion here — it just routes.
+
+### Disk hygiene
+
+`POST /reset` and `DELETE /v1/channels/:id` only drop the mapping in
+`sessions.json` — the underlying Claude Code session JSONL is preserved
+on disk under `~/.claude/projects/<sanitized-cwd>/<sessionId>.jsonl`.
+This is intentional: a soft reset leaves the conversation recoverable
+via `claude --resume <sessionId>`.
+
+Over time these orphaned JSONLs accumulate. The CLI provides a GC pass:
+
+```
+claudeclaw gc-sessions [--apply] [--min-age-days=N]
+       Walks ~/.claude/projects/<sanitized-cwd>/, intersects JSONL
+       filenames against live session IDs (global + per-thread), lists
+       orphans older than --min-age-days (default 7). Dry-run by
+       default; --apply to delete.
 ```
 
 ### Listing (cheap, derived from sessionManager)
@@ -277,19 +351,28 @@ v0.1 used `streamUserMessage` (the daemon-chat path) which lacks threadId, fallb
 - GET `/v1/channels?agent=<name>` — lists HTTP-channel thread sessions, optional agent filter
 - Internal threadIds namespaced as `http:<agent>:<channel_id>` so two agents can share a `channel_id` without colliding in `sessions.json`. (Cross-cutting concern flagged: Discord/Slack/Telegram threads avoid collisions only by accident of differing ID spaces; project-wide namespacing is out of scope here but precedent is set.)
 
-### v0.4 — Shortlist integration
+### v0.4 — Session lifecycle + multi-agent ✅
+
+- POST `/v1/channels/:id/reset?agent=<name>` now returns 409 when a run is in flight; pass `?force=true` to cancel and reset
+- POST `/v1/channels/:id/compact?agent=<name>` — in-place compact distinct from reset
+- New SSE event `session_boundary { agent, previous_session_id, reason, at }` so frontends draw a divider rather than reinventing it per-app
+- Every agent-attributed SSE event now carries an `agent` field; `GET /v1/channels/:id/stream?agent=<name>` filters to one agent for multi-bot channels
+- Per-thread cancellation in `runner.ts` via AsyncLocalStorage-scoped subprocess tracking; new exports `cancelThread(threadId)`, `isThreadBusy(threadId)`
+- `claudeclaw gc-sessions [--apply] [--min-age-days=N]` reclaims orphaned Claude Code JSONLs
+
+### v0.5 — Shortlist integration
 
 - Shortlist v0 ships with chat panel from day one (per Path A)
 - Validates: agent posting through API, PWA streaming UX, two-user concurrency
 
-### v0.5 — Cursus migration
+### v0.6 — Cursus migration
 
 - Build a thin Python `http_chat_client.py` to replace `chat_bridge.py`'s outbound writes and the Discord listener
 - Replace the Discord gateway code with SSE subscription
 - Migrate coach agents from Discord channel → HTTP channel
 - Keep Discord around for notifications only (or drop entirely)
 
-### v0.6 — Per-user JWT auth (optional)
+### v0.7 — Per-user JWT auth (optional)
 
 - Allow browsers to call the API directly without a relaying backend
 - JWT signed by the embedding app's pre-registered public key

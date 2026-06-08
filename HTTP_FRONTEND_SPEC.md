@@ -89,7 +89,82 @@ The embedding app must:
 - When the underlying entity is deleted (trip removed, athlete-coach pairing ended), the embedding app SHOULD call `DELETE /v1/channels/:id` to clean up the CC session mapping.
 - To clear context without losing the visible transcript (e.g. "start a fresh planning session for this trip"): call `POST /v1/channels/:id/reset`. The embedding app's stored messages are unaffected; only CC's session resets.
 
-## 9. Backend proxy (recommended pattern)
+### Reset semantics — in-flight guard
+
+`POST /reset` returns **409 Conflict** when the agent is mid-run on the
+channel. The frontend should:
+
+1. Show "Still working on the previous message — cancel and reset, or wait?"
+2. On "wait": noop. The in-flight run will complete normally and emit
+   `agent_complete`; the user can hit reset again.
+3. On "cancel and reset": call `POST /reset?force=true`. The server will
+   SIGTERM the running subprocess (SIGKILL after 5s) and proceed.
+
+Do not loop on 409 — that races with the user.
+
+### Session boundary divider
+
+After a successful reset (forced or not), the server emits a
+`session_boundary` SSE event:
+
+```
+{ type: "session_boundary",
+  agent: "<bot>",
+  previous_session_id: "<uuid>",
+  reason: "user_reset" | "force_reset",
+  at: <timestamp> }
+```
+
+Persist this as a `system`-role row in `chat_messages` (content can be
+`"Session reset"` or similar). The UI renders it as a visual divider so
+the user understands earlier context is no longer accessible to the
+agent. Without this, users forget they hit reset and wonder why the
+agent lost the thread.
+
+### Compact (in-place)
+
+`POST /v1/channels/:id/compact?agent=<name>` shrinks the session's
+context window without destroying it. Use when the chat has been busy
+all day and the user wants to keep continuity but reclaim turns.
+Distinct from reset:
+
+| Action  | Session id    | Conversation continuity | Use when                  |
+| ------- | ------------- | ----------------------- | ------------------------- |
+| compact | unchanged     | yes (compressed)        | "trim context, keep going" |
+| reset   | new           | no                      | "start over"              |
+
+Compact returns 409 if a run is in flight; frontend should wait for
+completion then retry, not force-cancel.
+
+## 9. Multi-agent channels
+
+One `channel_id` can host any number of agents (CC namespaces them
+internally as `http:<agent>:<channel_id>`). For each user message the
+frontend decides *which* agent it's for and sets the POST body's `agent`
+field accordingly.
+
+Two consumption shapes, pick one:
+
+1. **Merged stream, demultiplex by `agent` field on every event.** One
+   SSE connection to `GET /stream`, switch on `event.agent` when
+   persisting rows. Best for chat UIs that want every bot's traffic
+   visible together. Recommended for v1.
+
+2. **One stream per agent, server-side filter.** Open `GET /stream?agent=<name>`
+   for each agent. Server drops events whose `agent` doesn't match.
+   Best when each agent has an isolated surface (e.g. a separate
+   `<ChatPane>` per coach).
+
+**Cross-agent context (optional)**: if Kilian and Tadej are both in a
+channel and you want them to *see* each other's replies, the frontend
+must relay each agent's `agent_complete` text as a user message to the
+*other* agent, prefixed with `[from: <sender>]\n`. CC does not do this
+automatically — it only ever sees the agent it was POSTed to. (Be
+warned: agents seeing each other's replies as user messages can confuse
+authorship; bot-to-bot reply loops also need a depth guard at the
+frontend layer.)
+
+## 10. Backend proxy (recommended pattern)
 
 Most frontends should NOT call CC directly. Standard shape:
 
@@ -108,12 +183,12 @@ The backend:
 
 This keeps the service token off the wire, lets the backend write to its DB on every event (so reconnect-from-DB works), and gives the embedding app a single audit point.
 
-## 10. Minimal embedding checklist
+## 11. Minimal embedding checklist
 
 Before integrating, confirm the embedding app has:
 
 - [ ] User auth and identity model
-- [ ] A `chat_messages` (or equivalent) table
+- [ ] A `chat_messages` (or equivalent) table — include a `system` role for `session_boundary` rows
 - [ ] Backend route that proxies POST → CC, persists user message
 - [ ] Backend route that proxies SSE → browser, persists agent events as they stream
 - [ ] Optimistic UI with `client_message_id` dedup
@@ -121,3 +196,6 @@ Before integrating, confirm the embedding app has:
 - [ ] Attachment hosting with URLs reachable from CC
 - [ ] Multi-user message rendering
 - [ ] DELETE channel call on entity teardown
+- [ ] Reset flow handles 409 with a confirm dialog before falling back to `?force=true`
+- [ ] `session_boundary` event persisted and rendered as a divider
+- [ ] If multi-agent: every persisted row carries the `agent` field; UI demuxes
