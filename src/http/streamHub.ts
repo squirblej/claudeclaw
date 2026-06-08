@@ -14,7 +14,7 @@
  * un-attributed events (ping, error without run, etc.) reach all subscribers.
  */
 export type SseEvent =
-  | { type: "user_message"; agent?: string; user_id: string; content: string; attachments?: unknown[]; client_message_id?: string; posted_at: number }
+  | { type: "user_message"; agent?: string; user_id: string; content: string; attachments?: Array<{ filename: string; mime: string; size_bytes: number }>; client_message_id?: string; posted_at: number }
   | { type: "agent_token"; agent: string; run_id: string; text: string }
   | { type: "tool_activity"; agent: string; run_id: string; text: string }       // pre-formatted "● [Tool] summary" or "  ⎿  result" line from runUserMessage's onToolEvent
   | { type: "agent_complete"; agent: string; run_id: string; final_text: string; ended_at: number }

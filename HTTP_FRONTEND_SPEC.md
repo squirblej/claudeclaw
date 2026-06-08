@@ -71,10 +71,56 @@ The embedding app must:
 
 ## 6. Attachments
 
-- The embedding app hosts files itself (its own object storage / filesystem) and provides URLs CC can fetch.
-- The POST body's `attachments[].url` must be reachable from the CC process (typically a same-host URL since CC is loopback-bound by default).
-- For sensitive content, sign URLs with short-lived tokens; CC will fetch within seconds.
-- CC does not store or re-host attachments.
+CC accepts **base64-inline** attachments on the POST body — no separate URL
+hosting or fetch step. The frontend reads the file once, base64-encodes it,
+and sends it with the message. See `HTTP_CHANNEL_SPEC.md` → Attachments for
+the wire format and mime-classification rules.
+
+### Two UI affordances to support
+
+Real chat UIs need both. Implement both.
+
+1. **"+" / paperclip button** opening a file picker (`<input type="file" multiple>`
+   on web, native pickers on Swift). For images, consider client-side resize
+   before encoding (a 12 MP phone photo is ~10 MB; resizing to 1600 px wide
+   keeps detail and cuts size 5–10×).
+2. **Paste handler** on the chat input. Listen for `paste` events; check
+   `e.clipboardData.items` for `kind: "file"`; treat each as an attachment.
+   This catches both screenshot-and-paste and copy-from-Finder flows.
+   Drag-and-drop is a third nice-to-have but optional for v1.
+
+Render attachments inline above the agent reply (thumbnail for images,
+filename + mime chip for other files). Persist
+`{ filename, mime, size_bytes }` per attachment on the `chat_messages`
+row (alongside the existing content); the SSE echo carries the same
+shape so other tabs see it identically.
+
+### Size limit
+
+`http.maxBodyBytes` (server-side) caps the whole POST. Default is 1 MB,
+which is too small for real attachments. Bump to **10–25 MB** in each
+bot's `.claude/claudeclaw/settings.json.tpl`:
+
+```json
+"http": {
+  "maxBodyBytes": 26214400
+}
+```
+
+base64 inflates the payload by ~33%, so 25 MB of body covers roughly
+18 MB of original file. If you want larger, raise both limits.
+
+### How the agent sees attachments
+
+CC writes them to disk (under `.claude/claudeclaw/inbox/http/<channel>/<run>/`)
+and announces them in the prompt:
+
+- Images → `Image path: <abs>` + an inspect instruction.
+- Text files (.txt, .md, text/\*) → inlined into the prompt (capped 50 KB).
+- Everything else (PDFs, zips, …) → `Attached file (<name>, <mime>): <abs>`
+  with a Read-tool hint.
+
+The per-run inbox dir is deleted automatically after the run finishes.
 
 ## 7. Multi-user UX
 

@@ -103,6 +103,58 @@ GET    /v1/health
        → 200 { status: "ok", version: "1.0.0", uptime_sec: 12345 }
 ```
 
+### Attachments
+
+POST body's `attachments` field is now wired all the way through to the
+agent. Wire shape — base64 inline (chosen over URL hosting for
+simplicity: one POST carries everything, no second fetch round-trip, no
+URL auth/expiry):
+
+```json
+{
+  "attachments": [
+    {
+      "filename": "scan.pdf",
+      "mime": "application/pdf",
+      "data": "<base64>"
+    }
+  ]
+}
+```
+
+Server flow per attachment:
+
+1. Validate shape (`filename`, `mime`, `data` all required strings; `data`
+   must be valid base64).
+2. Sanitize filename (strip path components, allow `[A-Za-z0-9._-]`).
+3. Decode and write to
+   `<cwd>/.claude/claudeclaw/inbox/http/<channelId>/<runId>/<filename>`.
+4. Build per-attachment prompt lines based on mime:
+   - `image/*` → `Image path: <abs>` + "The user attached an image. Inspect this image file directly before answering."
+   - `text/*` or `.txt`/`.md` → inline content (truncated at 50 KB) → `Attached text file (<name>):\n<content>`
+   - everything else (PDFs, zips, audio without STT, …) → `Attached file (<name>, <mime>): <abs>` + "Use the Read tool to inspect this file…"
+5. Append the lines to the user's `content` before passing to the runner.
+6. After the run finishes (success or error), delete the per-run inbox dir.
+
+**Size limits**: `http.maxBodyBytes` (default **1 MB**) caps the entire
+POST including base64-encoded attachments. base64 inflates by ~33%, so
+1 MB of body fits roughly a 750 KB original file. Bump `maxBodyBytes`
+to 10 MB or higher if you want to support phone photos / PDFs.
+
+**Content + attachments**: either is sufficient — an attachment-only
+message (paste an image with no text) is valid. The server rejects only
+when both are absent.
+
+**SSE echo**: the `user_message` event includes attachments as
+**metadata only** (`{ filename, mime, size_bytes }`), never the base64
+data. The sending tab already has the file; other tabs/users see the
+metadata and can fetch from their own backend if they need a preview.
+
+**no_reply**: attachments are still decoded and persisted (so a
+no-reply system message can still carry artifacts other tabs might
+surface), but the per-run dir is cleaned up immediately since the agent
+isn't going to run.
+
 ### Messages — the main verb
 
 ```
@@ -351,7 +403,7 @@ v0.1 used `streamUserMessage` (the daemon-chat path) which lacks threadId, fallb
 - GET `/v1/channels?agent=<name>` — lists HTTP-channel thread sessions, optional agent filter
 - Internal threadIds namespaced as `http:<agent>:<channel_id>` so two agents can share a `channel_id` without colliding in `sessions.json`. (Cross-cutting concern flagged: Discord/Slack/Telegram threads avoid collisions only by accident of differing ID spaces; project-wide namespacing is out of scope here but precedent is set.)
 
-### v0.4 — Session lifecycle + multi-agent ✅
+### v0.4 — Session lifecycle + multi-agent + attachments ✅
 
 - POST `/v1/channels/:id/reset?agent=<name>` now returns 409 when a run is in flight; pass `?force=true` to cancel and reset
 - POST `/v1/channels/:id/compact?agent=<name>` — in-place compact distinct from reset
@@ -359,6 +411,7 @@ v0.1 used `streamUserMessage` (the daemon-chat path) which lacks threadId, fallb
 - Every agent-attributed SSE event now carries an `agent` field; `GET /v1/channels/:id/stream?agent=<name>` filters to one agent for multi-bot channels
 - Per-thread cancellation in `runner.ts` via AsyncLocalStorage-scoped subprocess tracking; new exports `cancelThread(threadId)`, `isThreadBusy(threadId)`
 - `claudeclaw gc-sessions [--apply] [--min-age-days=N]` reclaims orphaned Claude Code JSONLs
+- **Attachments wired end-to-end**: POST `attachments: [{ filename, mime, data }]` (base64); server validates, decodes, writes to per-run inbox dir, builds image/text/file prompt lines (mirroring Discord adapter), cleans up after run. SSE echo carries metadata only.
 
 ### v0.5 — Shortlist integration
 

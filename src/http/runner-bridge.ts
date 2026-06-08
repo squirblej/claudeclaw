@@ -15,12 +15,17 @@
 import { runUserMessage } from "../runner";
 import { publish } from "./streamHub";
 import { internalThreadId } from "./threadId";
+import { buildAttachmentPromptLines, cleanupAttachments, type AttachmentFile } from "./attachments";
 
 export interface RunRequest {
   channelId: string;
   runId: string;
   agent: string;
   prompt: string;
+  /** Files already decoded and written to disk by handlePostMessage. */
+  attachmentFiles?: AttachmentFile[];
+  /** Per-run temp dir to delete after the run finishes. */
+  attachmentDir?: string;
 }
 
 /**
@@ -32,8 +37,15 @@ export interface RunRequest {
  * returned 202 by the time we get here, so throwing would just orphan.
  */
 export async function runForChannel(req: RunRequest): Promise<void> {
-  const { channelId, runId, agent, prompt } = req;
+  const { channelId, runId, agent, prompt, attachmentFiles = [], attachmentDir = "" } = req;
   const finalChunks: string[] = [];
+
+  // Build the effective prompt: user text + per-attachment announcement
+  // lines so the agent sees image/text/file paths.
+  const attachmentLines = await buildAttachmentPromptLines(attachmentFiles);
+  const effectivePrompt = attachmentLines.length > 0
+    ? (prompt ? `${prompt}\n${attachmentLines.join("\n")}` : attachmentLines.join("\n"))
+    : prompt;
 
   const onChunk = (text: string) => {
     finalChunks.push(text);
@@ -48,7 +60,7 @@ export async function runForChannel(req: RunRequest): Promise<void> {
   try {
     const result = await runUserMessage(
       agent,
-      prompt,
+      effectivePrompt,
       internalThreadId(agent, channelId),  // namespaced so two agents can share a channel_id
       agent,                                // agentName — picks up per-agent CLAUDE.md if configured
       onChunk,
@@ -85,5 +97,6 @@ export async function runForChannel(req: RunRequest): Promise<void> {
     });
   } finally {
     publish(channelId, { type: "agent_busy", agent, busy: false });
+    if (attachmentDir) await cleanupAttachments(attachmentDir);
   }
 }

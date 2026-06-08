@@ -16,6 +16,7 @@ import { runForChannel } from "./runner-bridge";
 import { internalThreadId, parseInternalThreadId } from "./threadId";
 import { peekThreadSession, removeThreadSession, listThreadSessions } from "../sessionManager";
 import { cancelThread, isThreadBusy, compactCurrentThreadSession } from "../runner";
+import { validateAttachments, persistAttachments, metadataFor } from "./attachments";
 
 const SERVER_VERSION = "0.1.0";
 let startedAt = 0;
@@ -195,33 +196,70 @@ async function handlePostMessage(req: Request, channelId: string): Promise<Respo
   const content = typeof parsed.content === "string" ? parsed.content : "";
   const clientMessageId = typeof parsed.client_message_id === "string" ? parsed.client_message_id : undefined;
   const noReply = parsed.no_reply === true;
-  const attachments = Array.isArray(parsed.attachments) ? parsed.attachments : undefined;
 
   if (!agent) return jsonResponse(400, { error: "agent is required" });
   if (!userId) return jsonResponse(400, { error: "user_id is required" });
-  if (!content) return jsonResponse(400, { error: "content is required" });
   if (!isAgentAllowed(agent)) return jsonResponse(403, { error: `agent '${agent}' not in allowedAgents` });
+
+  const attachmentsCheck = validateAttachments(parsed.attachments);
+  if (!attachmentsCheck.ok) {
+    return jsonResponse(400, { error: "invalid attachments", details: attachmentsCheck.errors });
+  }
+  const rawAttachments = attachmentsCheck.parsed;
+
+  // Allow attachment-only messages (paste an image without text). Either
+  // content or at least one attachment must be present.
+  if (!content && rawAttachments.length === 0) {
+    return jsonResponse(400, { error: "content or attachments is required" });
+  }
 
   const postedAt = Date.now();
   const runId = crypto.randomUUID();
 
-  // Echo the user message to all subscribers immediately (so other users /
-  // tabs see it live).
+  // Persist attachments to disk so the agent can read them. We do this even
+  // for no_reply messages so other tabs can fetch them if the embedding app
+  // wants to surface them — but skip the agent run.
+  let attachmentDir = "";
+  let attachmentFiles: Awaited<ReturnType<typeof persistAttachments>>["files"] = [];
+  if (rawAttachments.length > 0) {
+    try {
+      const persisted = await persistAttachments(rawAttachments, channelId, runId);
+      attachmentDir = persisted.dir;
+      attachmentFiles = persisted.files;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return jsonResponse(400, { error: `failed to decode attachments: ${message}` });
+    }
+  }
+
+  // Echo the user message to all subscribers immediately. Metadata only —
+  // never the base64 data (sender already has the file; other tabs fetch
+  // separately if needed).
   publish(channelId, {
     type: "user_message",
     agent,
     user_id: userId,
     content,
-    ...(attachments ? { attachments } : {}),
+    ...(attachmentFiles.length > 0 ? { attachments: metadataFor(attachmentFiles) } : {}),
     ...(clientMessageId ? { client_message_id: clientMessageId } : {}),
     posted_at: postedAt,
   });
 
   if (!noReply) {
     // Fire-and-forget — the runner emits via SSE.
-    runForChannel({ channelId, runId, agent, prompt: content }).catch((err) => {
+    runForChannel({
+      channelId,
+      runId,
+      agent,
+      prompt: content,
+      attachmentFiles,
+      attachmentDir,
+    }).catch((err) => {
       console.error(`[http] runForChannel(${channelId}) crashed:`, err);
     });
+  } else if (attachmentDir) {
+    // no_reply means nothing else will clean up the per-run dir.
+    void import("./attachments").then((m) => m.cleanupAttachments(attachmentDir));
   }
 
   return jsonResponse(202, {
