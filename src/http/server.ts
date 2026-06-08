@@ -15,6 +15,7 @@ import { publish, subscribe, type SseEvent, type Subscriber } from "./streamHub"
 import { runForChannel } from "./runner-bridge";
 import { internalThreadId, parseInternalThreadId } from "./threadId";
 import { peekThreadSession, removeThreadSession, listThreadSessions } from "../sessionManager";
+import { cancelThread, isThreadBusy, compactCurrentThreadSession } from "../runner";
 
 const SERVER_VERSION = "0.1.0";
 let startedAt = 0;
@@ -83,21 +84,66 @@ async function handleHealth(): Promise<Response> {
   });
 }
 
-async function handleReset(channelId: string, agent: string): Promise<Response> {
+async function handleReset(channelId: string, agent: string, force: boolean): Promise<Response> {
   if (!isAgentAllowed(agent)) return jsonResponse(403, { error: `agent '${agent}' not in allowedAgents` });
   const tid = internalThreadId(agent, channelId);
   const existing = await peekThreadSession(tid);
   if (!existing) return jsonResponse(404, { error: "channel has no active session" });
+
+  // In-flight guard: by default refuse to reset while a run is active, so the
+  // frontend can prompt the user. ?force=true cancels the run (SIGTERM, then
+  // SIGKILL after 5s) and proceeds.
+  const busy = isThreadBusy(tid);
+  if (busy && !force) {
+    return jsonResponse(409, {
+      error: "agent is currently running on this channel; pass ?force=true to cancel and reset",
+      busy: true,
+    });
+  }
+  if (busy && force) cancelThread(tid);
+
   await removeThreadSession(tid);
+
+  publish(channelId, { type: "agent_busy", agent, busy: false });
   publish(channelId, {
-    type: "agent_busy",
-    busy: false,
+    type: "session_boundary",
+    agent,
+    previous_session_id: existing.sessionId,
+    reason: force ? "force_reset" : "user_reset",
+    at: Date.now(),
   });
+
   return jsonResponse(200, {
     channel_id: channelId,
     agent,
     previous_session_id: existing.sessionId,
+    forced: !!force,
     message: "Next message will start a fresh CC session for this channel.",
+  });
+}
+
+async function handleCompact(channelId: string, agent: string): Promise<Response> {
+  if (!isAgentAllowed(agent)) return jsonResponse(403, { error: `agent '${agent}' not in allowedAgents` });
+  const tid = internalThreadId(agent, channelId);
+  const existing = await peekThreadSession(tid);
+  if (!existing) return jsonResponse(404, { error: "channel has no active session to compact" });
+
+  if (isThreadBusy(tid)) {
+    return jsonResponse(409, {
+      error: "agent is currently running on this channel; wait for the run to finish then retry",
+      busy: true,
+    });
+  }
+
+  const result = await compactCurrentThreadSession(tid, agent);
+  if (!result.success) {
+    return jsonResponse(500, { error: result.message });
+  }
+  return jsonResponse(200, {
+    channel_id: channelId,
+    agent,
+    session_id: existing.sessionId,
+    message: result.message,
   });
 }
 
@@ -163,6 +209,7 @@ async function handlePostMessage(req: Request, channelId: string): Promise<Respo
   // tabs see it live).
   publish(channelId, {
     type: "user_message",
+    agent,
     user_id: userId,
     content,
     ...(attachments ? { attachments } : {}),
@@ -184,7 +231,7 @@ async function handlePostMessage(req: Request, channelId: string): Promise<Respo
   });
 }
 
-function handleStream(channelId: string): Response {
+function handleStream(channelId: string, agentFilter: string | null): Response {
   const encoder = new TextEncoder();
   let pingInterval: ReturnType<typeof setInterval> | null = null;
   let unsubscribe: (() => void) | null = null;
@@ -205,6 +252,7 @@ function handleStream(channelId: string): Response {
         close: () => {
           try { controller.close(); } catch {}
         },
+        ...(agentFilter ? { agentFilter } : {}),
       };
 
       unsubscribe = subscribe(channelId, subscriber);
@@ -267,12 +315,18 @@ async function route(req: Request): Promise<Response> {
       return resp;
     }
     if (tail === "stream" && method === "GET") {
-      return handleStream(channelId);
+      return handleStream(channelId, url.searchParams.get("agent"));
     }
     if (tail === "reset" && method === "POST") {
       const agent = url.searchParams.get("agent");
       if (!agent) return jsonResponse(400, { error: "?agent= query param required" });
-      return handleReset(channelId, agent);
+      const force = url.searchParams.get("force") === "true";
+      return handleReset(channelId, agent, force);
+    }
+    if (tail === "compact" && method === "POST") {
+      const agent = url.searchParams.get("agent");
+      if (!agent) return jsonResponse(400, { error: "?agent= query param required" });
+      return handleCompact(channelId, agent);
     }
     if (tail === "" && method === "DELETE") {
       const agent = url.searchParams.get("agent");

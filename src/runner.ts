@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile, realpath } from "fs/promises";
 import { join, dirname, resolve, sep } from "path";
 import { execSync } from "child_process";
 import { existsSync, writeFileSync, mkdirSync, readFileSync } from "fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   getSession,
   createSession,
@@ -283,6 +284,34 @@ function enqueue<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
 // outside the main queue and must not be killed by /kill.
 const mainActiveProcs = new Set<ReturnType<typeof Bun.spawn>>();
 
+// Per-thread subprocess tracking for cancellation. Populated via
+// threadIdStorage (AsyncLocalStorage) so spawn sites don't need a threadId
+// param — execClaude wraps its work in threadIdStorage.run(threadId, …).
+const threadActiveProcs = new Map<string, Set<ReturnType<typeof Bun.spawn>>>();
+const threadIdStorage = new AsyncLocalStorage<string>();
+
+function trackProc(proc: ReturnType<typeof Bun.spawn>): void {
+  mainActiveProcs.add(proc);
+  const tid = threadIdStorage.getStore();
+  if (tid) {
+    let set = threadActiveProcs.get(tid);
+    if (!set) { set = new Set(); threadActiveProcs.set(tid, set); }
+    set.add(proc);
+  }
+}
+
+function untrackProc(proc: ReturnType<typeof Bun.spawn>): void {
+  mainActiveProcs.delete(proc);
+  const tid = threadIdStorage.getStore();
+  if (tid) {
+    const set = threadActiveProcs.get(tid);
+    if (set) {
+      set.delete(proc);
+      if (set.size === 0) threadActiveProcs.delete(tid);
+    }
+  }
+}
+
 /** Kill all running main-queue claude subprocesses. Returns true if anything was killed. */
 export function killActive(): boolean {
   if (mainActiveProcs.size === 0) return false;
@@ -291,6 +320,24 @@ export function killActive(): boolean {
   }
   mainActiveProcs.clear();
   return true;
+}
+
+/** Kill the active subprocess(es) for a specific thread. Returns true if anything was killed. */
+export function cancelThread(threadId: string): boolean {
+  const set = threadActiveProcs.get(threadId);
+  if (!set || set.size === 0) return false;
+  for (const proc of set) {
+    try { proc.kill("SIGTERM"); } catch {}
+    setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
+  }
+  // The spawn site's finally/catch will clean up the map entry once exit settles.
+  return true;
+}
+
+/** True while any subprocess is in flight for the given thread. */
+export function isThreadBusy(threadId: string): boolean {
+  const set = threadActiveProcs.get(threadId);
+  return !!set && set.size > 0;
 }
 
 /** True while any main-queue agent is processing a task (excludes fork). */
@@ -424,7 +471,7 @@ async function runClaudeOnce(
     ...(cwd ? { cwd } : {}),
   });
 
-  mainActiveProcs.add(proc);
+  trackProc(proc);
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => reject(new Error(`Claude session timed out after ${timeoutMs / 1000}s`)), timeoutMs);
@@ -441,7 +488,7 @@ async function runClaudeOnce(
 
     if (timeoutId) clearTimeout(timeoutId);
     await proc.exited;
-    mainActiveProcs.delete(proc);
+    untrackProc(proc);
 
     return {
       rawStdout,
@@ -450,7 +497,7 @@ async function runClaudeOnce(
     };
   } catch (err) {
     if (timeoutId) clearTimeout(timeoutId);
-    mainActiveProcs.delete(proc);
+    untrackProc(proc);
     // Kill the hung process
     try { proc.kill("SIGTERM"); } catch {}
     setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
@@ -493,7 +540,7 @@ async function runClaudeStream(
     ...(cwd ? { cwd } : {}),
   });
 
-  mainActiveProcs.add(proc);
+  trackProc(proc);
   let sessionId: string | undefined;
   let resultText = "";
   let stderr = "";
@@ -581,11 +628,11 @@ async function runClaudeStream(
     ]);
     if (streamJsonTimeoutId) clearTimeout(streamJsonTimeoutId);
     await proc.exited;
-    mainActiveProcs.delete(proc);
+    untrackProc(proc);
     return { rawStdout: resultText, stderr: stderr.trim(), exitCode: proc.exitCode ?? 1, sessionId };
   } catch (err) {
     if (streamJsonTimeoutId) clearTimeout(streamJsonTimeoutId);
-    mainActiveProcs.delete(proc);
+    untrackProc(proc);
     try { proc.kill("SIGTERM"); } catch {}
     setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
     const message = err instanceof Error ? err.message : String(err);
@@ -647,7 +694,7 @@ async function runClaudeStreaming(
     env: buildChildEnv(baseEnv, model, api),
   });
 
-  mainActiveProcs.add(proc);
+  trackProc(proc);
   const stderrPromise = new Response(proc.stderr).text();
 
   let finalResult = "";
@@ -723,7 +770,7 @@ async function runClaudeStreaming(
   }
 
   await proc.exited;
-  mainActiveProcs.delete(proc);
+  untrackProc(proc);
 
   const stderr = await stderrPromise;
   // Also check stderr for rate limit signals
@@ -1444,7 +1491,11 @@ export async function run(
   onToolEvent?: (line: string) => void,
   compactOnTimeout: boolean = true,
 ): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt, threadId, modelOverride, timeoutMs, agentName, timeoutCategory, onChunk, onToolEvent, compactOnTimeout), threadId);
+  const work = () => execClaude(name, prompt, threadId, modelOverride, timeoutMs, agentName, timeoutCategory, onChunk, onToolEvent, compactOnTimeout);
+  // Run inside AsyncLocalStorage so spawn-site trackProc/untrackProc can map
+  // procs to this thread for per-thread cancellation.
+  const wrapped = threadId ? () => threadIdStorage.run(threadId, work) : work;
+  return enqueue(wrapped, threadId);
 }
 
 async function streamClaude(

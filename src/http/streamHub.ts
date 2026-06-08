@@ -7,18 +7,27 @@
  * (see HTTP_FRONTEND_SPEC.md).
  */
 
+/**
+ * Every agent-attributed event carries an `agent` field so a single channel
+ * subscriber can host messages from multiple agents (multi-bot channels).
+ * Subscribers can optionally filter to one agent via Subscriber.agentFilter;
+ * un-attributed events (ping, error without run, etc.) reach all subscribers.
+ */
 export type SseEvent =
-  | { type: "user_message"; user_id: string; content: string; attachments?: unknown[]; client_message_id?: string; posted_at: number }
-  | { type: "agent_token"; run_id: string; text: string }
-  | { type: "tool_activity"; run_id: string; text: string }       // pre-formatted "● [Tool] summary" or "  ⎿  result" line from runUserMessage's onToolEvent
-  | { type: "agent_complete"; run_id: string; final_text: string; ended_at: number }
-  | { type: "agent_busy"; busy: boolean }
-  | { type: "error"; run_id?: string; code: string; message: string }
+  | { type: "user_message"; agent?: string; user_id: string; content: string; attachments?: unknown[]; client_message_id?: string; posted_at: number }
+  | { type: "agent_token"; agent: string; run_id: string; text: string }
+  | { type: "tool_activity"; agent: string; run_id: string; text: string }       // pre-formatted "● [Tool] summary" or "  ⎿  result" line from runUserMessage's onToolEvent
+  | { type: "agent_complete"; agent: string; run_id: string; final_text: string; ended_at: number }
+  | { type: "agent_busy"; agent: string; busy: boolean }
+  | { type: "session_boundary"; agent: string; previous_session_id: string | null; reason: "user_reset" | "force_reset"; at: number }
+  | { type: "error"; agent?: string; run_id?: string; code: string; message: string }
   | { type: "ping" };
 
 export interface Subscriber {
   send(event: SseEvent): void;
   close(): void;
+  /** When set, only events whose `agent` matches (or have no `agent` field) reach this subscriber. */
+  agentFilter?: string;
 }
 
 const channels = new Map<string, Set<Subscriber>>();
@@ -40,10 +49,19 @@ export function unsubscribe(channelId: string, sub: Subscriber): void {
   if (set.size === 0) channels.delete(channelId);
 }
 
+function eventAgent(event: SseEvent): string | undefined {
+  return (event as { agent?: string }).agent;
+}
+
 export function publish(channelId: string, event: SseEvent): void {
   const set = channels.get(channelId);
   if (!set || set.size === 0) return;
+  const agent = eventAgent(event);
   for (const sub of set) {
+    // Filter: if subscriber wants a specific agent, drop events from other
+    // agents. Un-attributed events (no `agent` field — ping, error sans run)
+    // always pass through.
+    if (sub.agentFilter && agent && sub.agentFilter !== agent) continue;
     try {
       sub.send(event);
     } catch {

@@ -37,14 +37,14 @@ export async function runForChannel(req: RunRequest): Promise<void> {
 
   const onChunk = (text: string) => {
     finalChunks.push(text);
-    publish(channelId, { type: "agent_token", run_id: runId, text });
+    publish(channelId, { type: "agent_token", agent, run_id: runId, text });
   };
 
   const onToolEvent = (line: string) => {
-    publish(channelId, { type: "tool_activity", run_id: runId, text: line });
+    publish(channelId, { type: "tool_activity", agent, run_id: runId, text: line });
   };
 
-  publish(channelId, { type: "agent_busy", busy: true });
+  publish(channelId, { type: "agent_busy", agent, busy: true });
   try {
     const result = await runUserMessage(
       agent,
@@ -58,26 +58,32 @@ export async function runForChannel(req: RunRequest): Promise<void> {
       const detail = (result.stderr || result.stdout || "").trim().slice(0, 4000);
       publish(channelId, {
         type: "error",
+        agent,
         run_id: runId,
         code: `agent_exit_${result.exitCode}`,
         message: detail || `agent exited with code ${result.exitCode}`,
       });
     }
+    // Prefer finalChunks (streamed); fall back to result.stdout in case onChunk
+    // never fired (text-only responses where streaming hooks aren't called).
+    const finalText = finalChunks.join("") || (result.stdout ?? "").trim();
     publish(channelId, {
       type: "agent_complete",
+      agent,
       run_id: runId,
-      final_text: finalChunks.join(""),
+      final_text: finalText,
       ended_at: Date.now(),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     publish(channelId, {
       type: "error",
+      agent,
       run_id: runId,
       code: "agent_run_failed",
       message,
     });
   } finally {
-    publish(channelId, { type: "agent_busy", busy: false });
+    publish(channelId, { type: "agent_busy", agent, busy: false });
   }
 }
