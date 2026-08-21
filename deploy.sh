@@ -54,30 +54,50 @@ echo "Restarting Docker bots..."
 COMPOSE=(docker compose -f "$BOTS_DIR/docker-compose.yml")
 mapfile -t RUNNING_BOTS < <("${COMPOSE[@]}" ps --services --status running)
 
-# TEMPORARY EXCLUSION — beancount. Pending summa-app's answer; remove once they
-# confirm either way, and do not let this become a second rotting list.
+# PERMANENT EXCLUSION — beancount. DO NOT REMOVE. Decided by summa-app, who own
+# it, on 2026-08-21. This is settled, not pending anything.
+#
+# (An earlier version of this comment said "remove once they answer either way".
+# They have answered, and the answer is KEEP IT — so that sentence would have
+# read as an instruction to delete the protection. Noted because an anti-rot
+# note that outlives its question becomes the instruction that undoes the fix.)
+#
+# WHY, and it is worse than "a restart mid-cycle is untidy". Pacioli edits the
+# cycle files DIRECTLY — they are its main edit surface — and neither validates
+# nor commits them. Summa detects completion by the chat disappearing from
+# pending_chats.json, and only then runs bean-check and either commits or
+# surgically reverts. So if the process dies after edits are written but before
+# the chat clears: the chat never clears, Summa's poller times out after five
+# minutes, and the timeout branch marks the run failed and returns WITHOUT
+# rolling back. Unvalidated edits sit in the working tree. Then git_autocommit
+# stages with `git add -A`, so the NEXT Summa action that commits anything at
+# all sweeps that orphaned half-edit into an unrelated commit under someone
+# else's message — committed, pushed, diff intact, provenance gone. On the
+# hand-reviewed cycle files Jack has said never to regenerate.
+#
+# summa-app is fixing the timeout branch to roll back its own delta, and STILL
+# wants this exclusion afterwards: it downgrades an ill-timed restart from
+# corrupting the record to merely losing an in-flight cycle, and nothing about
+# a plugin deploy needs to restart that bot at all.
 #
 # Note the old hardcoded list did NOT include beancount, so deploy has never
 # restarted it. Switching to "everything running" therefore does not merely
 # tidy the list — it newly exposes beancount, and this script is what would do
-# the exposing. Its cycle files are hand-edited and human-reviewed, and the
-# fleet's own guidance names regenerating them as the canonical
-# irreversible-loss case, so a mid-cycle restart is the one restart in this
-# stack with a plausible cost beyond a dropped connection.
+# the exposing.
 #
 # bot-stack raised the SHAPE of the risk without asserting it (it was idle when
-# checked, and the trigger model may well make a restart harmless) and has
-# routed the question to summa-app, who own whether mid-cycle restarts cost
-# anything. Until they answer, the conservative side is not to introduce a new
-# restart against a known irreversible-loss artefact. Cost of excluding: it
-# misses new plugin code for a few days, and says so below.
-EXCLUDE_PENDING=(beancount)
-for _ex in "${EXCLUDE_PENDING[@]}"; do
+# checked, so nothing was visible) and routed the question to summa-app, who own
+# it. Neither of us could have derived the mechanism above — it took the owner
+# explaining their own commit machinery. Cost of excluding: beancount does not
+# pick up plugin deploys, and the run says so out loud.
+DEPLOY_RESTART_EXCLUDE=(beancount)
+for _ex in "${DEPLOY_RESTART_EXCLUDE[@]}"; do
   for _i in "${!RUNNING_BOTS[@]}"; do
     if [ "${RUNNING_BOTS[$_i]}" = "$_ex" ]; then
       unset 'RUNNING_BOTS[_i]'
-      echo "  SKIPPING $_ex — excluded pending summa-app's mid-cycle-restart answer;"
-      echo "    it will NOT pick up this plugin deploy. Remove EXCLUDE_PENDING once resolved."
+      echo "  SKIPPING $_ex — permanently excluded (summa-app, 2026-08-21): a restart"
+      echo "    mid-cycle can strand unvalidated edits that 'git add -A' later commits"
+      echo "    under an unrelated message. It will NOT pick up this plugin deploy."
     fi
   done
 done
