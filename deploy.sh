@@ -54,6 +54,35 @@ echo "Restarting Docker bots..."
 COMPOSE=(docker compose -f "$BOTS_DIR/docker-compose.yml")
 mapfile -t RUNNING_BOTS < <("${COMPOSE[@]}" ps --services --status running)
 
+# TEMPORARY EXCLUSION — beancount. Pending summa-app's answer; remove once they
+# confirm either way, and do not let this become a second rotting list.
+#
+# Note the old hardcoded list did NOT include beancount, so deploy has never
+# restarted it. Switching to "everything running" therefore does not merely
+# tidy the list — it newly exposes beancount, and this script is what would do
+# the exposing. Its cycle files are hand-edited and human-reviewed, and the
+# fleet's own guidance names regenerating them as the canonical
+# irreversible-loss case, so a mid-cycle restart is the one restart in this
+# stack with a plausible cost beyond a dropped connection.
+#
+# bot-stack raised the SHAPE of the risk without asserting it (it was idle when
+# checked, and the trigger model may well make a restart harmless) and has
+# routed the question to summa-app, who own whether mid-cycle restarts cost
+# anything. Until they answer, the conservative side is not to introduce a new
+# restart against a known irreversible-loss artefact. Cost of excluding: it
+# misses new plugin code for a few days, and says so below.
+EXCLUDE_PENDING=(beancount)
+for _ex in "${EXCLUDE_PENDING[@]}"; do
+  for _i in "${!RUNNING_BOTS[@]}"; do
+    if [ "${RUNNING_BOTS[$_i]}" = "$_ex" ]; then
+      unset 'RUNNING_BOTS[_i]'
+      echo "  SKIPPING $_ex — excluded pending summa-app's mid-cycle-restart answer;"
+      echo "    it will NOT pick up this plugin deploy. Remove EXCLUDE_PENDING once resolved."
+    fi
+  done
+done
+RUNNING_BOTS=("${RUNNING_BOTS[@]}")   # reindex after unset
+
 # Guard the empty case explicitly. If the expansion is empty, the command
 # degrades to a bare `docker compose restart`, which acts on every service in
 # the file rather than the set we computed.
