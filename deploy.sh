@@ -54,15 +54,25 @@ echo "Restarting Docker bots..."
 COMPOSE=(docker compose -f "$BOTS_DIR/docker-compose.yml")
 mapfile -t RUNNING_BOTS < <("${COMPOSE[@]}" ps --services --status running)
 
-# PERMANENT EXCLUSION — beancount. DO NOT REMOVE. Decided by summa-app, who own
-# it, on 2026-08-21. This is settled, not pending anything.
+# EXCLUSION LIST — currently EMPTY. Entries here are skipped when restarting.
 #
-# (An earlier version of this comment said "remove once they answer either way".
-# They have answered, and the answer is KEEP IT — so that sentence would have
-# read as an instruction to delete the protection. Noted because an anti-rot
-# note that outlives its question becomes the instruction that undoes the fix.)
+# beancount (Pacioli) sat here from 2026-08-21 until 2026-09-21, when Jack retired
+# the bot: its container is gone and bot-stack removed the compose service, so the
+# name can never appear in RUNNING_BOTS again. Removed as dead code rather than
+# left to rot — this script exists because a hardcoded list rotted twice, and a
+# named exception for a bot that no longer exists is that same rot in a new place.
+# Verified before removing: `compose ps --services --status running` returns
+# coach, coach-humph, coach-tom, dr-chad and no beancount; the still-running
+# beancount-runner/beancount-fava containers belong to
+# ~/services/beancount/docker-compose.yml, which this script never touches.
 #
-# WHY, and it is worse than "a restart mid-cycle is untidy". Pacioli edits the
+# THE REASON IS KEPT BECAUSE THE SHAPE WILL RECUR, not because this bot might come
+# back. Add a bot here if it writes into a repo that something else auto-commits
+# with `git add -A`. That combination turns an ill-timed restart from a dropped
+# connection into a SILENT CORRUPTION, and the mechanism is worth reading in full
+# before deciding a future bot is safe:
+#
+# WHY, and it is worse than "a restart mid-cycle is untidy". Pacioli edited the
 # cycle files DIRECTLY — they are its main edit surface — and neither validates
 # nor commits them. Summa detects completion by the chat disappearing from
 # pending_chats.json, and only then runs bean-check and either commits or
@@ -90,14 +100,12 @@ mapfile -t RUNNING_BOTS < <("${COMPOSE[@]}" ps --services --status running)
 # it. Neither of us could have derived the mechanism above — it took the owner
 # explaining their own commit machinery. Cost of excluding: beancount does not
 # pick up plugin deploys, and the run says so out loud.
-DEPLOY_RESTART_EXCLUDE=(beancount)
+DEPLOY_RESTART_EXCLUDE=()
 for _ex in "${DEPLOY_RESTART_EXCLUDE[@]}"; do
   for _i in "${!RUNNING_BOTS[@]}"; do
     if [ "${RUNNING_BOTS[$_i]}" = "$_ex" ]; then
       unset 'RUNNING_BOTS[_i]'
-      echo "  SKIPPING $_ex — permanently excluded (summa-app, 2026-08-21): a restart"
-      echo "    mid-cycle can strand unvalidated edits that 'git add -A' later commits"
-      echo "    under an unrelated message. It will NOT pick up this plugin deploy."
+      echo "  SKIPPING $_ex — excluded from restart; see DEPLOY_RESTART_EXCLUDE above."
     fi
   done
 done
