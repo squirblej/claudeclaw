@@ -19,26 +19,26 @@ import { homedir, tmpdir } from "os";
 import { fileURLToPath } from "url";
 
 // ── Plugin repos to install (one plugin per repo) ───────────────────
-const PLUGINS = [
-  "https://github.com/SawyerHood/dev-browser",
-  "https://github.com/thedotmack/claude-mem",
-  "https://github.com/obra/superpowers-marketplace",
-  // Add more repos here:
-  // "https://github.com/user/repo",
-];
+// EMPTIED 2026-10-21 (Jack's decision). These three cloned on EVERY container
+// start and never installed: Docker materialises plugins/cache as root:root,
+// so the bun user cannot mkdir a marketplace beside it. 866 MB per container
+// with claude-plugins-official below — ~97% of each writable layer, four
+// containers, re-pulled from GitHub every boot at whatever HEAD was served
+// that morning, including into dr-chad, which holds a third party's medical
+// record. Re-adding a line here restores that, so add one only deliberately:
+//   "https://github.com/SawyerHood/dev-browser",
+//   "https://github.com/thedotmack/claude-mem",      // 791 MB on its own
+//   "https://github.com/obra/superpowers-marketplace",
+// Prior state and the revert recipe: ~/bots/preflight-clone-removal-2026-10-21.md
+const PLUGINS: string[] = [];
 
 // ── Cherry-pick from anthropics/claude-plugins-official ─────────────
-const OFFICIAL_PLUGINS = [
-  "ralph-loop",
-  "hookify",
-  "code-review",
-  "pr-review-toolkit",
-  "commit-commands",
-  "plugin-dev",
-  // Add more plugin names here (must match names in marketplace.json):
-  // "typescript-lsp",
-  // "playwright",
-];
+// EMPTIED 2026-10-21 with PLUGINS above. First-party (Anthropic), but cloned
+// the same way and just as unpinned — 24 MB of the 866. installOfficialPlugins
+// returns early on an empty list, so nothing is fetched. Was:
+//   "ralph-loop", "hookify", "code-review",
+//   "pr-review-toolkit", "commit-commands", "plugin-dev",
+const OFFICIAL_PLUGINS: string[] = [];
 
 // ── Config ──────────────────────────────────────────────────────────
 const OFFICIAL_REPO = "https://github.com/anthropics/claude-plugins-official";
